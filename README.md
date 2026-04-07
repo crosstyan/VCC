@@ -2,9 +2,7 @@
 
 # VCC: View-oriented Conversation Compiler
 
-[English](README.md) | [简体中文](README_cn.md) | [日本語](README_jp.md)
-
-Official implementation of "View-oriented Conversation Compiler for Agent Trace Analysis" ([Paper](https://arxiv.org/abs/2603.29678)).
+Unofficial implementation of "View-oriented Conversation Compiler for Agent Trace Analysis" ([Paper](https://arxiv.org/abs/2603.29678)).
 
 This fork targets Codex user-level skills and Codex rollout logs under `~/.codex/sessions`.
 
