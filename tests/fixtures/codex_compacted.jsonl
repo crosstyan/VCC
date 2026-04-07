@@ -1,0 +1,8 @@
+{"timestamp":"2026-04-07T06:39:50.044Z","type":"session_meta","payload":{"id":"00000000-0000-0000-0000-000000000002","timestamp":"2026-04-07T06:38:38.648Z","cwd":"/repo","originator":"codex-tui","cli_version":"0.118.0","source":"cli","model_provider":"openai"}}
+{"timestamp":"2026-04-07T06:39:51.044Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"first prompt"}]}}
+{"timestamp":"2026-04-07T06:39:52.044Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first answer"}]}}
+{"timestamp":"2026-04-07T06:39:53.044Z","type":"compacted","payload":{"message":"","replacement_history":[{"type":"message","role":"user","content":[{"type":"input_text","text":"first prompt"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first answer"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"old hidden summary"}]}]}}
+{"timestamp":"2026-04-07T06:39:53.100Z","type":"event_msg","payload":{"type":"context_compacted"}}
+{"timestamp":"2026-04-07T06:39:54.044Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"second prompt"}]}}
+{"timestamp":"2026-04-07T06:39:55.044Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"echo second\",\"workdir\":\"/repo\"}","call_id":"call_def456"}}
+{"timestamp":"2026-04-07T06:39:56.044Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_def456","output":"second\n"}}

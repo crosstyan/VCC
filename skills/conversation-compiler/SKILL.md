@@ -1,137 +1,118 @@
 ---
 name: conversation-compiler
-description: "VCC (View-oriented Conversation Compiler) documentation. Compile Claude Code JSONL logs into adaptive views."
+description: "VCC for Codex. Compile Codex rollout JSONL logs into full, brief, and adaptive views."
 ---
 
-# VCC — View-oriented Conversation Compiler
+# VCC for Codex
 
-Compile Claude Code JSONL logs into adaptive views for reading, searching, and context recovery.
+Compile Codex rollout JSONL logs from `~/.codex/sessions/**/*.jsonl` into agent-friendly views.
 
 ## Usage
 
 ```bash
-python "path/to/VCC.py" <input.jsonl ...> [options]
+python "~/.codex/skills/conversation-compiler/scripts/VCC.py" <rollout.jsonl ...> [options]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `-o <dir>` | Output directory (default: same as input) |
-| `-t <N>` | Token truncation limit (default 128) |
-| `-tu <N>` | User message token limit (default 256) |
-| `--grep <pattern>` | Regex search pattern (Python `re` — use `a|b`, NOT `a\|b`) |
-
-This tool also supports multi-file processing:
-
 ```bash
-cd "/path/to/target/folder" && python "path/to/VCC.py" *.jsonl --grep "keyword"
+python "~/.codex/skills/conversation-compiler/scripts/find_codex_rollouts.py" [options]
 ```
 
 ## Output Files
 
 | File | When | Description |
 |------|------|-------------|
-| `.txt` | Always | Full transcript, lossless |
-| `.min.txt` | Always | Brief overview |
-| `.view.txt` | `--grep` only | Search-focused view |
-| stdout | `--grep` only | Search results with block-level line range references |
+| `.txt` | Always | Full transcript |
+| `.min.txt` | Always | Brief UI-oriented view |
+| `.view.txt` | `--grep` only | Search-focused adaptive view |
+| stdout | `--grep` only | Matching blocks with line-range references |
 
 ## Rules
 
-- **Forward slashes only in bash commands.** Backslashes in double quotes are escape characters — `\U`, `\l`, `\.` get silently mangled. Use `"C:/Users/..."` not `"C:\Users\..."`. This applies to ALL bash commands (not just this skill), on ALL platforms (Windows and Linux alike).
-- Do NOT use `-o` unless the user explicitly requests an output directory. By default, compiled files are written next to the input JSONL — this is the intended behavior.
-- Do NOT clean up compiled output files after use. Leave them in place unless the user explicitly asks to clean up.
+- Use Codex rollout files from `~/.codex/sessions`, not `~/.codex/history.jsonl`. `history.jsonl` is prompt history only and is not a full transcript.
+- Always use VCC `--grep` for content search on rollout files. Do not replace it with system `grep` or `rg`.
+- Do not use `-o` unless the user explicitly asks for a separate output directory.
+- Leave compiled output files in place unless the user explicitly asks to remove them.
+- Codex reasoning is unsupported in this fork. If the rollout stores encrypted reasoning, VCC hides it completely.
 
 ## Workflow
 
-**1. Compile**
+**1. Find rollout files**
+
+Use the helper to find relevant sessions:
 
 ```bash
-python "path/to/VCC.py" "path/to/conversation.jsonl"
+python "~/.codex/skills/conversation-compiler/scripts/find_codex_rollouts.py" --cwd "$PWD" --latest
 ```
 
-Produces `.txt` + `.min.txt` next to the input file. Long conversations are automatically split into numbered chunks. The console output lists every produced file with line/word counts — read it to understand the conversation's size and structure before proceeding:
-
-```
-conversation_1.txt  (2808 lines, 34545 words)
-conversation_2.txt  (9622 lines, 116015 words)
-conversation_3.txt  (3242 lines, 37946 words)
-conversation_1.min.txt  (101 lines, 1572 words)
-conversation_2.min.txt  (811 lines, 9504 words)
-conversation_3.min.txt  (205 lines, 3340 words)
-```
-
-Chunks are numbered chronologically — higher numbers are more recent. (During `/recall`, the last chunk is the current conversation; the second-to-last is likely where the previous session's context ends.) Use this to gauge how many chunks exist and how large each is, so you can target your `.min.txt` reads and `--grep` searches to the right chunks.
-
-**2. Read `.min.txt`**
-
-The `.min.txt` is a scannable outline: user/assistant text is kept (truncated), tool calls collapse to one-line summaries with line references back to `.txt`.
-
-```
-[user]
-
-Take a look!
-
-[assistant]
-
-Let me take a look.
-
-* Read "code.py" (a_1.txt:19-21,24-34)
-```
-
-Each `*` line shows the tool name, key parameter, and two `.txt` line ranges: the call (19-21) and the result (24-34). Read these ranges in `.txt` for full details.
-
-**3. Search with `--grep`**
-
-Always use `--grep`, never system grep nor your embedded Grep tool. This script's `--grep` returns important block-level line RANGES that no other grep tools can provide. The output paths are relative to CWD, so `cd` close to the target first to keep outputs short and save tokens.
+List recent sessions for the current project:
 
 ```bash
-cd "/path/to/target/folder" && python "path/to/VCC.py" "path/to/conversation.jsonl" --grep "keyword"
+python "~/.codex/skills/conversation-compiler/scripts/find_codex_rollouts.py" --cwd "$PWD" --limit 20
 ```
 
-Stdout example (`#` prefix = shortened filename)：
+If no exact current-project match exists, broaden the search by omitting `--cwd`.
 
+**2. Compile**
+
+```bash
+python "~/.codex/skills/conversation-compiler/scripts/VCC.py" "/absolute/path/to/rollout.jsonl"
 ```
-(#752a87.txt:L67-L81) [assistant]      →  .txt lines 67-81
-  77: one matched line ...             →  .txt line 77
+
+Codex compaction boundaries are split into numbered chunks automatically. Higher chunk numbers are newer.
+
+**3. Read `.min.txt`**
+
+The `.min.txt` file is the default scan surface. It keeps user and assistant text, collapses tool calls to one-line summaries, and includes pointers back into `.txt`.
+
+**4. Search with `--grep`**
+
+```bash
+python "~/.codex/skills/conversation-compiler/scripts/VCC.py" "/absolute/path/to/rollout.jsonl" --grep "keyword"
 ```
 
-Optionally read `.view.txt` for focused search view.
+For many rollouts, pass multiple files in one invocation:
 
-**4. Jump to `.txt`**
+```bash
+python "~/.codex/skills/conversation-compiler/scripts/VCC.py" /path/a.jsonl /path/b.jsonl --grep "keyword"
+```
 
-All line references point to `.txt`. Read the referenced range for full context. Remember to read a bit more lines before and after the referenced range to get more context.
+Read `.view.txt` only when you want the focused projection. For precise context recovery, jump into the referenced `.txt` ranges.
 
-# SKILLs
+**5. Jump to `.txt`**
 
-## /readchat — Read a specific conversation log
+All references resolve against `.txt`, which is the canonical line-number coordinate system for that chunk.
 
-**Trigger**: The user wants to read a specific JSONL conversation log.
+# Skills
 
-**Action**: Follow the Workflow above with the user-specified filenames or requests.
+## `readchat` - Read a specific Codex rollout
 
-## /searchchat — Search across conversation logs
+Trigger when the user wants to inspect a specific rollout file, thread file, or `~/.codex/sessions/...jsonl`.
 
-**Trigger**: The user wants to search across conversation logs in `~/.claude/projects/`.
+Action:
 
-**Action**:
+1. Compile the rollout with `VCC.py`.
+2. Read the newest `.min.txt` chunk first.
+3. Use `--grep` and `.txt` line jumps as needed.
 
-1. `ls ~/.claude/projects/` — browse project directories, narrow the search area.
-2. `cd ~/.claude/projects/<project> && python "absolute/path/to/VCC.py" *.jsonl --grep "keyword"` — search top-level conversations first.
-3. If no results: `cd ~/.claude/projects/<project> && python "absolute/path/to/VCC.py" **/*.jsonl --grep "keyword"` — expand to subagents.
+## `searchchat` - Search across Codex rollouts
 
-**Critical**: Always `cd` into the target directory first, then use VCC globs — a single `cd && python VCC.py <glob> --grep` is the correct pattern. Without `cd`, grep output contains full absolute paths instead of short relative paths, wasting tokens. All content search on JSONL must use VCC's `--grep`, never system grep or the embedded Grep tool — VCC's `--grep` returns block-level line ranges with role tags that no other grep can provide.
+Trigger when the user wants to search prior Codex sessions.
 
-## /recall — Recover context from a previous conversation
+Action:
 
-**Trigger**: The conversation opens with a context-continuation summary ("This session is being continued from a previous conversation..."), or the user says `/recall`.
+1. Use `find_codex_rollouts.py --cwd "$PWD" --limit 20` first.
+2. If no useful results appear, broaden by omitting `--cwd`.
+3. Run one VCC `--grep` command across the selected rollout files.
+4. Read the referenced `.txt` ranges for the relevant hits.
 
-**Action**:
+## `recall` - Recover context from recent Codex sessions
 
-1. **Find JSONL filename** — The continuation message ends with `read the full transcript at: <path>.jsonl`. Find that JSONL filename. If no JSONL path is present (e.g. the user invoked `/recall` manually without a continuation header), use the `/searchchat` method to locate the JSONL before proceeding to steps 2–3.
+Trigger when the user asks to recall prior context, continue previous work, or recover what was discussed earlier.
 
-2. **Follow VCC Workflow** — Follow the full Workflow above (compile → read `.min.txt` → `--grep` → jump to `.txt`) with the JSONL file found in step 1. The summary is lossy — only the original JSONL is authoritative.
+Action:
 
-3. **Verify against current state** — After recovering the conversation, cross-check with reality:
-   - **REALLY read files** — Read all files referenced in the conversation with your Read tool. Pre-loaded content from system-reminders or prior conversation turns does NOT count — it may be truncated, stale, or lossy. You must issue a fresh Read call for each file, even if you believe you already have its content. 99.97% of the time, the user has externally modified nearly every file between sessions. If you skip reading and miss their external changes, your failure rate is effectively 100%.
-   - **Key details** — Identify specific values, paths, configs, and logic mentioned in the conversation. Compare against the actual files to catch drift or errors.
-   - **Understand the journey** — Trace the user's intent, decision sequence, and direction changes. Understand not just what was done, but how and why they got there.
+1. Use `find_codex_rollouts.py --cwd "$PWD" --latest` to locate the newest current-project rollout.
+2. If nothing matches, broaden the search and choose the most relevant recent rollout.
+3. Compile the rollout with VCC.
+4. Read the newest `.min.txt` chunk first, then use `--grep` and `.txt` jumps to recover details.
+5. After recovering context, verify any referenced files or repository state directly from the workspace before relying on the transcript.

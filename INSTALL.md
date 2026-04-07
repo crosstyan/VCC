@@ -1,21 +1,53 @@
-# Installation Guide for Agents (Manual Install)
+# Installation Guide for Codex
 
 ## Requirements
 
 - Python 3.10+
+- Codex installed and using the default user skill path `~/.codex/skills`
 
 ## Install
 
-Clone this repo to any temporary location. Copy the four folders inside `skills/` (`conversation-compiler`, `readchat`, `recall`, `searchchat`) into your project's `.claude/skills/`. Delete the cloned repo.
+Clone this repo to any temporary location.
+
+Copy these four directories into `~/.codex/skills/`:
+
+- `skills/conversation-compiler`
+- `skills/readchat`
+- `skills/recall`
+- `skills/searchchat`
+
+The result should be:
+
+```text
+~/.codex/skills/conversation-compiler
+~/.codex/skills/readchat
+~/.codex/skills/recall
+~/.codex/skills/searchchat
+```
+
+Then restart Codex so it picks up the new skills.
 
 ## Update
 
-Clone this repo to any temporary location. Delete the four folders (`conversation-compiler`, `readchat`, `recall`, `searchchat`) from your `.claude/skills/`, then copy the new versions from the cloned `skills/` into `.claude/skills/`. Delete the cloned repo.
+Clone the repo again, replace those same four directories under `~/.codex/skills/`, and restart Codex.
 
 ## Verify
 
-After install or update, ask the user to restart Claude Code, then run `/recall` to test that everything works.
+Run:
+
+```bash
+python "~/.codex/skills/conversation-compiler/scripts/find_codex_rollouts.py" --latest
+```
+
+Then ask Codex to use `recall` or `searchchat`.
 
 ## Uninstall
 
-Delete `conversation-compiler`, `readchat`, `recall`, `searchchat` from your `.claude/skills/`. Ask the user to restart Claude Code.
+Delete these directories from `~/.codex/skills/`:
+
+- `conversation-compiler`
+- `readchat`
+- `recall`
+- `searchchat`
+
+Restart Codex after uninstalling.

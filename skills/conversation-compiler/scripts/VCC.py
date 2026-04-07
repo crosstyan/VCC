@@ -123,6 +123,16 @@ def lex(path):
         return [json.loads(l) for l in f if l.strip()]
 
 
+def detect_format(recs):
+    for r in recs:
+        rt = r.get("type")
+        if rt in {"session_meta", "response_item", "event_msg", "turn_context", "compacted"}:
+            return "codex"
+        if rt in {"assistant", "user", "system"}:
+            return "claude"
+    return "claude"
+
+
 def _collect_stats(chain):
     """Extract usage/timing/model stats from a chain of records, including subagents."""
     from collections import defaultdict
@@ -275,6 +285,24 @@ def split_chains(recs):
     if cur: chains.append(cur)
     return chains
 
+
+def split_codex_chains(recs):
+    chains = []
+    cur = []
+    for r in recs:
+        rt = r.get("type")
+        if rt == "compacted":
+            if cur:
+                chains.append(cur)
+            cur = []
+            continue
+        if rt == "event_msg" and r.get("payload", {}).get("type") == "context_compacted":
+            continue
+        cur.append(r)
+    if cur:
+        chains.append(cur)
+    return chains
+
 # ── image / doc ──
 
 def _media_ext(media_type, default_ext):
@@ -307,6 +335,10 @@ _TOOL_SUMMARY_FIELDS = {
     "Read": "file_path", "Edit": "file_path", "Write": "file_path",
     "Glob": "pattern", "Grep": "pattern",
     "Agent": "description", "Skill": "skill",
+    "exec_command": "cmd", "write_stdin": "chars",
+    "spawn_agent": "message", "send_input": "message",
+    "wait_agent": "target", "close_agent": "target",
+    "view_image": "path", "request_user_input": "questions",
 }
 
 def _tool_summary(name, inp):
@@ -513,6 +545,288 @@ def parse(chain, outdir, data_prefix, data_ctr):
     return ir
 
 
+def _render_json_lines(value):
+    return json.dumps(value, ensure_ascii=False, indent=2).split("\n")
+
+
+def _maybe_json_string(value):
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _structured_lines(value):
+    if value in (None, "", {}, []):
+        return []
+    if isinstance(value, dict):
+        return _emit_dict(value).split("\n")
+    if isinstance(value, list):
+        return _render_json_lines(value)
+    parsed = _maybe_json_string(value)
+    if isinstance(parsed, dict):
+        return _emit_dict(parsed).split("\n")
+    if isinstance(parsed, list):
+        return _render_json_lines(parsed)
+    return _sanitize(str(value)).split("\n")
+
+
+def _codex_content_label(item):
+    item_type = item.get("type", "content")
+    if item_type in {"input_image", "output_image", "image"}:
+        return "[image]"
+    if item_type in {"input_file", "output_file", "file", "document"}:
+        return "[document]"
+    return f"[{item_type}]"
+
+
+def _codex_message_lines(content):
+    parts = []
+    for item in content or []:
+        item_type = item.get("type")
+        if item_type in {"input_text", "output_text", "text"}:
+            text = _sanitize(item.get("text", ""))
+            if text:
+                parts.append(text)
+            continue
+        if item_type == "refusal":
+            text = _sanitize(item.get("refusal", ""))
+            if text:
+                parts.append(text)
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(_sanitize(text))
+            continue
+        parts.append(_codex_content_label(item))
+    if not parts:
+        return []
+    return _sanitize("\n\n".join(parts)).split("\n")
+
+
+def _codex_tool_call_name(payload):
+    pt = payload.get("type")
+    if pt == "function_call":
+        return payload.get("name", "unknown")
+    if pt == "custom_tool_call":
+        return (
+            payload.get("name")
+            or payload.get("call_name")
+            or payload.get("raw_name")
+            or "custom_tool"
+        )
+    if pt == "web_search_call":
+        return "web_search"
+    if pt == "image_generation_call":
+        return "image_generation"
+    if pt == "local_shell_call":
+        return "local_shell"
+    if pt == "tool_search_call":
+        return "tool_search"
+    return payload.get("name", pt or "unknown")
+
+
+def _codex_tool_call_id(payload):
+    return (
+        payload.get("call_id")
+        or payload.get("id")
+        or payload.get("tool_call_id")
+        or ""
+    )
+
+
+def _codex_tool_input(payload):
+    pt = payload.get("type")
+    if pt == "function_call":
+        parsed = _maybe_json_string(payload.get("arguments"))
+        if isinstance(parsed, dict):
+            return parsed
+        raw = payload.get("arguments")
+        return {"arguments": raw} if raw else {}
+    if pt == "custom_tool_call":
+        if isinstance(payload.get("input"), dict):
+            return payload.get("input")
+        parsed = _maybe_json_string(payload.get("input"))
+        if isinstance(parsed, dict):
+            return parsed
+        raw = payload.get("input")
+        return {"input": raw} if raw else {}
+    if pt == "web_search_call":
+        query = payload.get("query")
+        if query:
+            return {"query": query}
+        return {}
+    if pt == "image_generation_call":
+        prompt = payload.get("prompt") or payload.get("revised_prompt")
+        if prompt:
+            return {"prompt": prompt}
+        return {}
+    if pt == "local_shell_call":
+        command = payload.get("command")
+        if command:
+            return {"command": command}
+        return {}
+    if pt == "tool_search_call":
+        query = payload.get("query")
+        if query:
+            return {"query": query}
+        return {}
+    return {}
+
+
+def _codex_tool_output_lines(payload):
+    pt = payload.get("type")
+    if pt in {"function_call_output", "custom_tool_call_output"}:
+        return _structured_lines(payload.get("output"))
+    if pt == "tool_search_output":
+        return _structured_lines(payload.get("output"))
+    return []
+
+
+def parse_codex(chain, outdir, data_prefix, data_ctr):
+    del outdir, data_prefix, data_ctr
+    ir = []
+    sec = 0
+    blk = 0
+
+    call_names = {}
+    for r in chain:
+        if r.get("type") != "response_item":
+            continue
+        payload = r.get("payload", {})
+        pt = payload.get("type")
+        if pt in {
+            "function_call",
+            "custom_tool_call",
+            "web_search_call",
+            "image_generation_call",
+            "local_shell_call",
+            "tool_search_call",
+        }:
+            call_id = _codex_tool_call_id(payload)
+            if call_id:
+                call_names[call_id] = _codex_tool_call_name(payload)
+
+    def _emit_sep():
+        if sec > 0:
+            ir.append(_node("meta", ["", SEP]))
+
+    def _emit_header(h):
+        ir.append(_node("meta_header", [h, ""], _sec=sec))
+
+    for r in chain:
+        rt = r.get("type")
+        if rt in {"session_meta", "turn_context", "compacted"}:
+            continue
+
+        if rt == "response_item":
+            payload = r.get("payload", {})
+            pt = payload.get("type")
+
+            if pt == "reasoning":
+                continue
+
+            if pt == "message":
+                role = payload.get("role")
+                lines = _codex_message_lines(payload.get("content", []))
+                if not lines:
+                    continue
+                if role == "developer":
+                    label = "[system]"
+                    node_type = "system"
+                elif role == "user":
+                    label = "[user]"
+                    node_type = "user"
+                else:
+                    label = "[assistant]"
+                    node_type = "assistant"
+                _emit_sep()
+                _emit_header(label)
+                ir.append(_node(node_type, lines, searchable=True, _sec=sec, _blk=blk))
+                blk += 1
+                sec += 1
+                continue
+
+            if pt in {
+                "function_call",
+                "custom_tool_call",
+                "web_search_call",
+                "image_generation_call",
+                "local_shell_call",
+                "tool_search_call",
+            }:
+                name = _codex_tool_call_name(payload)
+                call_id = _codex_tool_call_id(payload)
+                tool_input = _codex_tool_input(payload)
+                summary = _tool_summary(name, tool_input)
+                _emit_sep()
+                _emit_header("[assistant]")
+                ir.append(
+                    _node(
+                        "meta",
+                        [f">>>tool_call {name}:{_short_tid(call_id)}"],
+                        _sec=sec,
+                        _blk=blk,
+                        _tool_summary=summary,
+                    )
+                )
+                lines = _structured_lines(tool_input)
+                if lines:
+                    ir.append(
+                        _node("tool_call", lines, searchable=True, _sec=sec, _blk=blk)
+                    )
+                ir.append(_node("meta", ["<<<tool_call"], _sec=sec, _blk=blk))
+                blk += 1
+                sec += 1
+                continue
+
+            if pt in {"function_call_output", "custom_tool_call_output", "tool_search_output"}:
+                call_id = payload.get("call_id", "")
+                name = call_names.get(call_id, "unknown")
+                lines = _codex_tool_output_lines(payload)
+                if not lines:
+                    continue
+                _emit_sep()
+                _emit_header(f"[tool] {name}:{_short_tid(call_id)}")
+                ir.append(
+                    _node("tool_result", lines, searchable=True, _sec=sec, _blk=blk)
+                )
+                blk += 1
+                sec += 1
+                continue
+
+            continue
+
+        if rt == "event_msg":
+            payload = r.get("payload", {})
+            et = payload.get("type")
+            if et == "web_search_end":
+                call_id = payload.get("call_id", "")
+                lines = _structured_lines(
+                    {
+                        "query": payload.get("query", ""),
+                        "action": payload.get("action"),
+                    }
+                )
+                if not lines:
+                    continue
+                _emit_sep()
+                _emit_header(f"[tool] web_search:{_short_tid(call_id)}")
+                ir.append(
+                    _node("tool_result", lines, searchable=True, _sec=sec, _blk=blk)
+                )
+                blk += 1
+                sec += 1
+
+    ir.append(_node("meta", [""]))
+    return ir
+
+
 # ── IR walk ──
 
 def _is_tool_summary(o):
@@ -599,8 +913,9 @@ _BRIEF_STRIP_RE = re.compile(
 _BRIEF_UNWRAP_RE = re.compile(r'</?(?:command-name|command-args)>')
 _META_USER_RE = re.compile(
     r'^\s*<(?:task-notification|local-command-caveat|local-command-stdout'
-    r'|local-command-stderr)\b')
+    r'|local-command-stderr|environment_context|user_instructions)\b')
 _SKILL_USER_RE = re.compile(r'^Base directory for this skill:')
+_CODEX_AGENTS_USER_RE = re.compile(r'^# AGENTS\.md instructions for ')
 _BRIEF_HIDE_TOOLS = {"TodoWrite", "ToolSearch"}
 _BRIEF_HIDE_EXACT = {"Continue from where you left off.", "No response requested."}
 
@@ -622,6 +937,8 @@ def _user_hidden_in_brief(ir, sec):
         if _META_USER_RE.match(text):
             continue
         if _SKILL_USER_RE.match(text):
+            continue
+        if _CODEX_AGENTS_USER_RE.match(text):
             continue
         if not _strip_noise_xml(text):
             continue
@@ -985,8 +1302,14 @@ def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
     os.makedirs(output_dir, exist_ok=True)
     base = os.path.splitext(os.path.basename(input_path))[0]
 
-    recs = merge_chunks(lex(input_path))
-    chains = split_chains(recs)
+    raw_recs = lex(input_path)
+    src_format = detect_format(raw_recs)
+    if src_format == "codex":
+        recs = raw_recs
+        chains = split_codex_chains(recs)
+    else:
+        recs = merge_chunks(raw_recs)
+        chains = split_chains(recs)
     if not chains:
         if not quiet:
             print("No conversation chains found.")
@@ -1004,14 +1327,17 @@ def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
         vp = os.path.join(output_dir, vfn)
         data_ctr = [0]
 
-        ir = parse(chain, output_dir, f"{base}{sfx}", data_ctr)
+        if src_format == "codex":
+            ir = parse_codex(chain, output_dir, f"{base}{sfx}", data_ctr)
+        else:
+            ir = parse(chain, output_dir, f"{base}{sfx}", data_ctr)
         assign_lines(ir)
         lower_brief(ir, truncate, ffn, truncate_user)
 
         full = emit(ir, "content")
         brief = emit(ir, "content_brief")
 
-        stats_footer = _collect_stats(chain)
+        stats_footer = _collect_stats(chain) if src_format != "codex" else None
         if stats_footer:
             full.extend([""] + stats_footer)
 

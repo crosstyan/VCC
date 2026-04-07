@@ -1,6 +1,6 @@
 ---
 name: searchchat
-description: "Search across conversation logs in ~/.claude/projects/. Use when: the user says /searchchat, wants to search chat history, or explore the ~/.claude/projects/ directory."
+description: "Search across Codex rollout logs in ~/.codex/sessions. Use when the user wants to search prior Codex chat history."
 ---
 
-Read `.claude/skills/conversation-compiler/SKILL.md` now.
+Read `~/.codex/skills/conversation-compiler/SKILL.md` now.

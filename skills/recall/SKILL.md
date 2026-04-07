@@ -1,6 +1,6 @@
 ---
 name: recall
-description: "Recover context from a previous conversation that ran out of context. Use when: (1) the user says /recall; (2) the conversation starts with 'this session is being continued from a previous conversation that ran out of context'."
+description: "Recover context from a previous Codex session. Use when the user asks to recall previous work or continue a prior Codex conversation."
 ---
 
-Read `.claude/skills/conversation-compiler/SKILL.md` now.
+Read `~/.codex/skills/conversation-compiler/SKILL.md` now.

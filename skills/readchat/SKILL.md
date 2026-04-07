@@ -1,6 +1,6 @@
 ---
 name: readchat
-description: "Compile and read a specific JSONL conversation log. Use when: the user says /readchat, mentions .jsonl conversation files, or asks to review past Claude sessions."
+description: "Compile and read a specific Codex rollout JSONL log. Use when the user mentions ~/.codex/sessions files or asks to review a past Codex session."
 ---
 
-Read `.claude/skills/conversation-compiler/SKILL.md` now.
+Read `~/.codex/skills/conversation-compiler/SKILL.md` now.
