@@ -62,6 +62,8 @@ _TOK_RE = re.compile(
 )
 _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_DATA_URL_RE = re.compile(r"data:([A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]{256,})")
+_LONG_B64_RE = re.compile(r"(?<![A-Za-z0-9+/=])([A-Za-z0-9+/=]{1024,})(?![A-Za-z0-9+/=])")
 
 def _tokenize(text):
     return _TOK_RE.findall(text)
@@ -83,6 +85,36 @@ def _trunc(text, limit, ref=""):
         return text
     return "".join(tokens[:cut]) + (f"...(truncated from {ref})" if ref else "...(truncated)")
 
+def _looks_like_base64_blob(token):
+    if len(token) < 1024:
+        return False
+    stripped = token.rstrip("=")
+    if not stripped:
+        return False
+    # Avoid treating a long prose word or repeated identifier as a blob.
+    kinds = sum(
+        bool(re.search(pattern, stripped))
+        for pattern in (r"[a-z]", r"[A-Z]", r"[0-9]", r"[+/]")
+    )
+    return kinds >= 3
+
+def _redact_search_blob_line(line):
+    """Bound grep/view lines by eliding embedded base64-like payloads."""
+    def _data_url_repl(match):
+        media_type = match.group(1)
+        payload = re.sub(r"\s+", "", match.group(2))
+        return f"data:{media_type};base64,[omitted {len(payload)} base64 chars]"
+
+    def _b64_repl(match):
+        token = match.group(1)
+        if not _looks_like_base64_blob(token):
+            return token
+        return f"[omitted {len(token)} base64-like chars]"
+
+    line = _DATA_URL_RE.sub(_data_url_repl, line)
+    line = _LONG_B64_RE.sub(_b64_repl, line)
+    return line
+
 # ── match lines ──
 
 def match_lines(lines, regex, ref_fn="x.txt", start_line=1):
@@ -101,7 +133,7 @@ def match_lines(lines, regex, ref_fn="x.txt", start_line=1):
     block_ref = f"({ref_fn}:{start_line}-{end_line})"
     result = [block_ref]
     for ln, lt in matched:
-        result.append(f"  {ln}: {lt}")
+        result.append(f"  {ln}: {_redact_search_blob_line(lt)}")
     return result
 
 
@@ -1400,4 +1432,10 @@ def main():
 if __name__ == "__main__":
     if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    main()
+    try:
+        main()
+    except BrokenPipeError:
+        try:
+            sys.stdout = open(os.devnull, "w", encoding="utf-8")
+        finally:
+            sys.exit(0)

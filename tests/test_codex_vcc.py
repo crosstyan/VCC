@@ -66,6 +66,20 @@ class CodexVccTests(unittest.TestCase):
         self.assertIn("please inspect the repo", view)
         self.assertNotIn("encrypted_content", view)
 
+    def test_codex_grep_redacts_embedded_base64_blobs(self):
+        payload = "iVBORw0KGgo" + ("Aa0/" * 300)
+        line = f'AQA result image="data:image/png;base64,{payload}"'
+
+        rendered = self.vcc.match_lines(
+            [line],
+            re.compile("AQA"),
+            "codex_blob.txt",
+            42,
+        )
+
+        self.assertIn("data:image/png;base64,[omitted", rendered[1])
+        self.assertNotIn(payload, rendered[1])
+
 
 if __name__ == "__main__":
     unittest.main()
