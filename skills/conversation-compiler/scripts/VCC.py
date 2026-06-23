@@ -155,6 +155,8 @@ def lex(path):
 def detect_format(recs):
     for r in recs:
         rt = r.get("type")
+        if rt in {"t3_session", "t3_message", "t3_custom_message", "t3_activity"}:
+            return "t3code"
         if rt == "session":
             return "omp"
         if rt in {"session_meta", "response_item", "event_msg", "turn_context", "compacted"}:
@@ -348,6 +350,10 @@ def split_omp_chains(recs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     if cur:
         chains.append(cur)
     return chains
+
+
+def split_t3code_chains(recs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    return [recs] if recs else []
 
 # ── image / doc ──
 
@@ -1197,6 +1203,77 @@ def parse_omp(
     return ir
 
 
+def parse_t3code(
+    chain: list[dict[str, Any]],
+    outdir: str,
+    data_prefix: str,
+    data_ctr: list[int],
+) -> list[dict[str, Any]]:
+    del outdir, data_prefix, data_ctr
+    ir = []
+    sec = 0
+    blk = 0
+
+    def _emit_sep() -> None:
+        if sec > 0:
+            ir.append(_node("meta", ["", SEP]))
+
+    def _emit_header(h: str) -> None:
+        ir.append(_node("meta_header", [h, ""], _sec=sec))
+
+    def _emit_text_section(label: str, node_type: str, lines: list[str], searchable: bool = True) -> None:
+        nonlocal sec, blk
+        if not lines:
+            return
+        _emit_sep()
+        _emit_header(label)
+        ir.append(_node(node_type, lines, searchable=searchable, _sec=sec, _blk=blk))
+        blk += 1
+        sec += 1
+
+    for r in chain:
+        rt = r.get("type")
+
+        if rt == "t3_session":
+            lines = _structured_lines(
+                {
+                    key: r.get(key)
+                    for key in ("id", "timestamp", "cwd", "title", "model")
+                    if r.get(key) is not None
+                }
+            )
+            _emit_text_section("[session_init]", "session_init", lines, searchable=False)
+            continue
+
+        if rt == "t3_message":
+            role = r.get("role")
+            content = r.get("content")
+            lines = _sanitize(content).split("\n") if isinstance(content, str) and content else []
+            if role == "developer":
+                _emit_text_section("[system]", "system", lines)
+            elif role == "user":
+                _emit_text_section("[user]", "user", lines)
+            elif role == "assistant":
+                _emit_text_section("[assistant]", "assistant", lines)
+            else:
+                _emit_text_section(f"[custom] message:{role or 'unknown'}", "custom", lines)
+            continue
+
+        if rt in {"t3_custom_message", "t3_activity"}:
+            custom_type = r.get("customType") or rt
+            content = r.get("content")
+            lines = _sanitize(content).split("\n") if isinstance(content, str) and content else []
+            details = r.get("details")
+            if isinstance(details, dict) and details:
+                detail_lines = _structured_lines(details)
+                lines = (lines + ["", "details:"] + [f"  {line}" for line in detail_lines]) if lines else detail_lines
+            _emit_text_section(f"[custom] {custom_type}", "custom", lines)
+            continue
+
+    ir.append(_node("meta", [""]))
+    return ir
+
+
 # ── IR walk ──
 
 def _is_tool_summary(o):
@@ -1680,6 +1757,9 @@ def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
     elif src_format == "omp":
         recs = raw_recs
         chains = split_omp_chains(recs)
+    elif src_format == "t3code":
+        recs = raw_recs
+        chains = split_t3code_chains(recs)
     else:
         recs = merge_chunks(raw_recs)
         chains = split_chains(recs)
@@ -1704,6 +1784,8 @@ def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
             ir = parse_codex(chain, output_dir, f"{base}{sfx}", data_ctr)
         elif src_format == "omp":
             ir = parse_omp(chain, output_dir, f"{base}{sfx}", data_ctr)
+        elif src_format == "t3code":
+            ir = parse_t3code(chain, output_dir, f"{base}{sfx}", data_ctr)
         else:
             ir = parse(chain, output_dir, f"{base}{sfx}", data_ctr)
         assign_lines(ir)

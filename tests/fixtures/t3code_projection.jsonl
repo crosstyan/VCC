@@ -1,0 +1,4 @@
+{"type":"t3_session","id":"t3-thread-1","timestamp":"2026-06-23T01:00:00Z","cwd":"/tmp/t3-project","title":"T3 fixture","model":"codex/gpt-5.5"}
+{"type":"t3_message","timestamp":"2026-06-23T01:00:01Z","id":"msg-user-1","turn_id":"turn-1","role":"user","content":"please inspect the T3 Code history"}
+{"type":"t3_message","timestamp":"2026-06-23T01:00:02Z","id":"msg-assistant-1","turn_id":"turn-1","role":"assistant","content":"I will inspect the T3 Code projection tables."}
+{"type":"t3_activity","timestamp":"2026-06-23T01:00:03Z","customType":"activity:tool.completed","content":"Ran command","details":{"tone":"tool","turnId":"turn-1","payload":{"itemType":"command_execution","detail":"sqlite3 state.sqlite .tables"}}}

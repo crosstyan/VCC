@@ -4,11 +4,11 @@
 
 Unofficial implementation of "View-oriented Conversation Compiler for Agent Trace Analysis" ([Paper](https://arxiv.org/abs/2603.29678)).
 
-This fork targets user-level skills and session logs for both Codex and OMP, without modifying either harness source tree.
+This fork targets user-level skills and session logs for Codex, OMP, and T3 Code, without modifying any harness source tree.
 
 ## What This Fork Does
 
-VCC compiles Codex rollout JSONL files and OMP session JSONL files into:
+VCC compiles Codex rollout JSONL files, OMP session JSONL files, and T3 Code persisted threads into:
 
 - `.txt`: full transcript
 - `.min.txt`: brief UI-oriented view
@@ -21,6 +21,9 @@ The key invariant from the paper stays the same: line numbers are assigned once 
 - Use rollout files from `~/.codex/sessions/**/*.jsonl`.
 - Do not use `~/.codex/history.jsonl` for VCC. It is only prompt history, not a full transcript.
 - Use OMP session files from `${PI_CODING_AGENT_DIR:-~/.omp/agent}/sessions/**/*.jsonl`.
+- Use T3 Code history from `${T3CODE_HOME:-~/.t3}/{userdata,dev}/state.sqlite`.
+- Missing harness stores are skipped when `--harness all` is used.
+- T3 Code keeps its thread index in SQLite. For Codex-backed T3 threads, VCC uses T3's provider logs to find and compile the underlying Codex rollout when it exists; otherwise it exports the SQLite projection into an explicit `t3code` JSONL cache under `${VCC_CACHE_DIR:-~/.cache/vcc-history}`.
 - Codex reasoning is hidden in this fork. Real rollouts persist reasoning as encrypted content, so VCC does not attempt to render it.
 - Codex compaction and OMP compaction are split into numbered chunks automatically. Newer chunks get larger suffixes.
 
@@ -41,25 +44,25 @@ and, for OMP:
 The cross-harness CLI is `xcc`:
 
 ```bash
-uv --project /home/crosstyan/Code/VCC run xcc list --harness all --cwd "$PWD" --limit 20
+uv --project /Users/crosstyan/Code/VCC run xcc list --harness all --cwd "$PWD" --limit 20
 ```
 
 Search recent sessions from both harnesses:
 
 ```bash
-uv --project /home/crosstyan/Code/VCC run xcc search "keyword" --harness all --cwd "$PWD"
+uv --project /Users/crosstyan/Code/VCC run xcc search "keyword" --harness all --cwd "$PWD"
 ```
 
 Read a search result ref:
 
 ```bash
-uv --project /home/crosstyan/Code/VCC run xcc read "/absolute/path/to/session.txt:24-31"
+uv --project /Users/crosstyan/Code/VCC run xcc read "/absolute/path/to/session.txt:24-31"
 ```
 
 Compile one explicit Codex or OMP session file:
 
 ```bash
-uv --project /home/crosstyan/Code/VCC run xcc compile "/absolute/path/to/session.jsonl"
+uv --project /Users/crosstyan/Code/VCC run xcc compile "/absolute/path/to/session.jsonl"
 ```
 
 ## Skills
@@ -92,7 +95,7 @@ VCC lowers those records into:
 
 Unlike flat `grep`, the adaptive view preserves role and block boundaries and gives exact pointers back into the full view.
 
-OMP sessions use `type: "session"` headers plus append-only entries such as `message`, `model_change`, `compaction`, `branch_summary`, and `custom_message`. The `xcc` CLI discovers both harnesses, compiles each session through the same VCC views, and emits refs that `xcc read` can resolve.
+OMP sessions use `type: "session"` headers plus append-only entries such as `message`, `model_change`, `compaction`, `branch_summary`, and `custom_message`. T3 Code stores its UI projection in SQLite tables such as `projection_threads`, `projection_thread_messages`, and `projection_thread_activities`, with per-thread provider logs under `${T3CODE_HOME:-~/.t3}/{userdata,dev}/logs/provider`. The `xcc` CLI discovers available sources, compiles each session through the same VCC views, and emits refs that `xcc read` can resolve.
 
 ## Example
 

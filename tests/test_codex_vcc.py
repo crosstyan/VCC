@@ -100,6 +100,20 @@ class CodexVccTests(unittest.TestCase):
         self.assertIn('* read "packages/coding-agent/src/session/session-listing.ts"', brief)
         self.assertIn('* bash "git status --short"', brief)
 
+    def test_t3code_projection_compiles_messages_and_activities(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.vcc.compile_pass(str(FIXTURES / "t3code_projection.jsonl"), output_dir=tmp)
+            full = Path(tmp, "t3code_projection.txt").read_text(encoding="utf-8")
+            brief = Path(tmp, "t3code_projection.min.txt").read_text(encoding="utf-8")
+
+        self.assertIn("[session_init]", full)
+        self.assertIn("please inspect the T3 Code history", full)
+        self.assertIn("[assistant]", full)
+        self.assertIn("[custom] activity:tool.completed", full)
+        self.assertIn("sqlite3 state.sqlite .tables", full)
+        self.assertNotIn("[session_init]", brief)
+        self.assertIn("I will inspect the T3 Code projection tables.", brief)
+
 
 if __name__ == "__main__":
     unittest.main()
