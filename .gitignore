@@ -1,3 +1,16 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-*.pyo
+*.py[codz]
+*$py.class
+
+# Unit test / coverage reports
+.coverage
+.coverage.*
+.pytest_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+env/
+ENV/

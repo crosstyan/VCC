@@ -80,6 +80,26 @@ class CodexVccTests(unittest.TestCase):
         self.assertIn("data:image/png;base64,[omitted", rendered[1])
         self.assertNotIn(payload, rendered[1])
 
+    def test_omp_basic_compiles_messages_tools_and_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.vcc.compile_pass(str(FIXTURES / "omp_basic.jsonl"), output_dir=tmp)
+            full = Path(tmp, "omp_basic.txt").read_text(encoding="utf-8")
+            brief = Path(tmp, "omp_basic.min.txt").read_text(encoding="utf-8")
+
+        self.assertIn("[session_init]", full)
+        self.assertIn("inspect the OMP repo history", full)
+        self.assertIn("[model_change]", full)
+        self.assertIn("[user]", full)
+        self.assertIn("please inspect the OMP repo history", full)
+        self.assertIn(">>>tool_call read:123456", full)
+        self.assertIn(">>>tool_call bash:mpbash", full)
+        self.assertIn("[tool] read:123456", full)
+        self.assertIn("[tool_error] bash:mpbash", full)
+        self.assertIn("[custom] irc:incoming", full)
+        self.assertIn("[branch]", full)
+        self.assertIn('* read "packages/coding-agent/src/session/session-listing.ts"', brief)
+        self.assertIn('* bash "git status --short"', brief)
+
 
 if __name__ == "__main__":
     unittest.main()

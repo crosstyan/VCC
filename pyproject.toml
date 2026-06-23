@@ -1,0 +1,20 @@
+[project]
+name = "vcc-history"
+version = "0.1.0"
+description = "View-oriented conversation compiler and cross-harness history search CLI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "click>=8.1",
+]
+
+[project.scripts]
+xcc = "vcc_history.xcc:main"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vcc_history"]

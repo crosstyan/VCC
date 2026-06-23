@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-"""View-oriented Conversation Compiler (VCC) - compile Claude JSONL logs into adaptive views.
+"""View-oriented Conversation Compiler (VCC) internals for Codex and OMP JSONL logs.
 
 Produces per conversation chain:
   .txt       Full transcript (lossless rendering of JSONL)
   .min.txt   Brief mode (tool_call summaries with line refs, no separators)
-  .view.txt  View mode (search-focused, only with --grep)
+  .view.txt  View mode (search-focused, written by xcc search)
 
 Usage:
-  python VCC.py conversation.jsonl              # .txt + .min.txt
-  python VCC.py conversation.jsonl --grep "kw"  # + .view.txt + stdout search hits
-  python VCC.py conversation.jsonl -t 128       # truncation limit (tokens, default 128)
-  python VCC.py conversation.jsonl -tu 256      # user message truncation limit (default 256)
-  python VCC.py conversation.jsonl -o outdir    # output directory
-  python VCC.py project/*.jsonl --grep "kw"     # multi-file search
+  uv --project /home/crosstyan/Code/VCC run xcc compile conversation.jsonl
+  uv --project /home/crosstyan/Code/VCC run xcc search "kw" --harness all
 """
 
 import argparse
@@ -23,6 +19,7 @@ import os
 import re
 import sys
 import glob as globmod
+from typing import Any
 
 # ── dict emitter ──
 
@@ -158,6 +155,8 @@ def lex(path):
 def detect_format(recs):
     for r in recs:
         rt = r.get("type")
+        if rt == "session":
+            return "omp"
         if rt in {"session_meta", "response_item", "event_msg", "turn_context", "compacted"}:
             return "codex"
         if rt in {"assistant", "user", "system"}:
@@ -335,6 +334,21 @@ def split_codex_chains(recs):
         chains.append(cur)
     return chains
 
+
+def split_omp_chains(recs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    chains = []
+    cur = []
+    for r in recs:
+        if r.get("type") == "compaction":
+            if cur:
+                chains.append(cur)
+            cur = [r]
+            continue
+        cur.append(r)
+    if cur:
+        chains.append(cur)
+    return chains
+
 # ── image / doc ──
 
 def _media_ext(media_type, default_ext):
@@ -367,6 +381,9 @@ _TOOL_SUMMARY_FIELDS = {
     "Read": "file_path", "Edit": "file_path", "Write": "file_path",
     "Glob": "pattern", "Grep": "pattern",
     "Agent": "description", "Skill": "skill",
+    "read": "path", "edit": "path", "write": "path",
+    "find": "pattern", "search": "pattern", "web_search": "query",
+    "task": "description", "skill": "skill",
     "exec_command": "cmd", "write_stdin": "chars",
     "spawn_agent": "message", "send_input": "message",
     "wait_agent": "target", "close_agent": "target",
@@ -382,6 +399,12 @@ def _tool_summary(name, inp):
         val = inp.get("description") or inp.get("command", "")
         if val:
             # truncate long commands
+            if not inp.get("description") and len(val) > 60:
+                val = val[:57] + "..."
+            return f'* {name} "{val}"'
+    if name == "bash":
+        val = inp.get("description") or inp.get("command", "")
+        if val:
             if not inp.get("description") and len(val) > 60:
                 val = val[:57] + "..."
             return f'* {name} "{val}"'
@@ -854,6 +877,321 @@ def parse_codex(chain, outdir, data_prefix, data_ctr):
                 )
                 blk += 1
                 sec += 1
+
+    ir.append(_node("meta", [""]))
+    return ir
+
+
+def _omp_content_lines(content: object) -> list[str]:
+    if isinstance(content, str):
+        text = _sanitize(content)
+        return text.split("\n") if text else []
+    if not isinstance(content, list):
+        return []
+    parts = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type == "text":
+            text = _sanitize(item.get("text", ""))
+            if text:
+                parts.append(text)
+        elif item_type == "image":
+            parts.append("[image]")
+        elif item_type in {"document", "file"}:
+            parts.append("[document]")
+        elif isinstance(item.get("text"), str):
+            parts.append(_sanitize(item.get("text")))
+        elif item_type:
+            parts.append(f"[{item_type}]")
+    if not parts:
+        return []
+    return _sanitize("\n\n".join(parts)).split("\n")
+
+
+def _omp_tool_result_lines(message: dict[str, Any]) -> list[str]:
+    lines = _omp_content_lines(message.get("content"))
+    details = message.get("details")
+    if isinstance(details, dict) and details:
+        detail_lines = _structured_lines(details)
+        if lines:
+            return lines + ["", "details:"] + [f"  {line}" for line in detail_lines]
+        return detail_lines
+    return lines
+
+
+def _omp_custom_lines(message: dict[str, Any]) -> list[str]:
+    custom_type = message.get("customType") or message.get("role") or "custom"
+    lines = _omp_content_lines(message.get("content"))
+    details = message.get("details")
+    if isinstance(details, dict) and details:
+        detail_lines = _structured_lines(details)
+        if lines:
+            return lines + ["", "details:"] + [f"  {line}" for line in detail_lines]
+        return detail_lines
+    return lines or [f"[{custom_type}]"]
+
+
+def _omp_file_mention_lines(message: dict[str, Any]) -> list[str]:
+    lines = []
+    for item in message.get("files") or []:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path") or "(unknown)"
+        lines.append(f"<file path=\"{path}\">")
+        content = item.get("content")
+        if isinstance(content, str) and content:
+            lines.extend(_sanitize(content).split("\n"))
+        elif item.get("image"):
+            lines.append("[image]")
+        lines.append("</file>")
+    return lines
+
+
+def _omp_execution_lines(message: dict[str, Any], source_key: str) -> list[str]:
+    source = message.get(source_key) or ""
+    output = message.get("output") or ""
+    lines = []
+    if source:
+        lines.append(f"{source_key}: |")
+        lines.extend(f"  {line}" for line in _sanitize(source).split("\n"))
+    if "exitCode" in message:
+        lines.append(f"exit_code: {message.get('exitCode')}")
+    if message.get("cancelled"):
+        lines.append("cancelled: true")
+    if output:
+        lines.append("output: |")
+        lines.extend(f"  {line}" for line in _sanitize(output).split("\n"))
+    return lines
+
+
+def _omp_session_init_lines(entry: dict[str, Any]) -> list[str]:
+    lines = []
+    system_prompt = entry.get("systemPrompt")
+    task = entry.get("task")
+    tools = entry.get("tools")
+    if isinstance(system_prompt, str) and system_prompt:
+        lines.append("system_prompt: |")
+        lines.extend(f"  {line}" for line in _sanitize(system_prompt).split("\n"))
+    if isinstance(task, str) and task:
+        lines.append("task: |")
+        lines.extend(f"  {line}" for line in _sanitize(task).split("\n"))
+    if isinstance(tools, list) and tools:
+        lines.append("tools:")
+        for tool in tools:
+            lines.append(f"  - {_sanitize(str(tool))}")
+    return lines
+
+
+def _omp_entry_field_lines(entry: dict[str, Any], fields: list[str]) -> list[str]:
+    data = {field: entry[field] for field in fields if field in entry}
+    return _structured_lines(data) if data else []
+
+
+def parse_omp(
+    chain: list[dict[str, Any]],
+    outdir: str,
+    data_prefix: str,
+    data_ctr: list[int],
+) -> list[dict[str, Any]]:
+    del outdir, data_prefix, data_ctr
+    ir = []
+    sec = 0
+    blk = 0
+
+    def _emit_sep() -> None:
+        if sec > 0:
+            ir.append(_node("meta", ["", SEP]))
+
+    def _emit_header(h: str) -> None:
+        ir.append(_node("meta_header", [h, ""], _sec=sec))
+
+    def _emit_text_section(label: str, node_type: str, lines: list[str], searchable: bool = True) -> None:
+        nonlocal sec, blk
+        if not lines:
+            return
+        _emit_sep()
+        _emit_header(label)
+        ir.append(_node(node_type, lines, searchable=searchable, _sec=sec, _blk=blk))
+        blk += 1
+        sec += 1
+
+    for r in chain:
+        rt = r.get("type")
+        if rt == "session":
+            continue
+
+        if rt == "compaction":
+            summary = r.get("summary") or r.get("shortSummary") or r.get("content")
+            lines = _sanitize(summary).split("\n") if isinstance(summary, str) and summary else []
+            _emit_text_section("[compaction]", "compaction", lines)
+            continue
+
+        if rt == "branch_summary":
+            lines = _sanitize(r.get("summary", "")).split("\n") if r.get("summary") else []
+            if r.get("fromId"):
+                lines = [f"from: {r.get('fromId')}", ""] + lines
+            _emit_text_section("[branch]", "branch", lines)
+            continue
+
+        if rt == "custom_message":
+            custom_type = r.get("customType") or "custom_message"
+            lines = _omp_content_lines(r.get("content"))
+            details = r.get("details")
+            if isinstance(details, dict) and details:
+                detail_lines = _structured_lines(details)
+                lines = (lines + ["", "details:"] + [f"  {line}" for line in detail_lines]) if lines else detail_lines
+            _emit_text_section(f"[custom] {custom_type}", "custom", lines)
+            continue
+
+        if rt == "session_init":
+            _emit_text_section("[session_init]", "session_init", _omp_session_init_lines(r))
+            continue
+
+        if rt in {"model_change", "thinking_level_change", "service_tier_change", "mode_change"}:
+            lines = _omp_entry_field_lines(r, ["model", "role", "thinkingLevel", "configured", "serviceTier", "mode", "data"])
+            _emit_text_section(f"[{rt}]", "meta_event", lines, searchable=False)
+            continue
+
+        if rt in {"label", "custom", "ttsr_injection", "mcp_tool_selection"}:
+            lines = _omp_entry_field_lines(
+                r,
+                ["targetId", "label", "customType", "data", "injectedRules", "selectedToolNames"],
+            )
+            _emit_text_section(f"[{rt}]", "meta_event", lines, searchable=False)
+            continue
+
+        if rt != "message":
+            continue
+
+        message = r.get("message", {})
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+
+        if role in {"user", "developer"}:
+            label = "[system]" if role == "developer" else "[user]"
+            node_type = "system" if role == "developer" else "user"
+            _emit_text_section(label, node_type, _omp_content_lines(message.get("content")))
+            continue
+
+        if role == "assistant":
+            blocks = message.get("content") or []
+            if not isinstance(blocks, list):
+                _emit_text_section("[assistant]", "assistant", _omp_content_lines(blocks))
+                continue
+
+            mark = len(ir)
+            saved_blk = blk
+            _emit_sep()
+            _emit_header("[assistant]")
+            has_any = False
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                bt = block.get("type")
+                if bt == "text":
+                    lines = _sanitize(block.get("text", "")).split("\n") if block.get("text") else []
+                    if lines:
+                        ir.append(_node("assistant", lines, searchable=True, _sec=sec, _blk=blk))
+                        blk += 1
+                        has_any = True
+                    continue
+                if bt == "thinking":
+                    thinking = _sanitize(block.get("thinking", ""))
+                    if thinking:
+                        ir.append(_node("meta", [">>>thinking"], _sec=sec, _blk=blk))
+                        ir.append(_node("thinking", thinking.split("\n"), searchable=True, _sec=sec, _blk=blk))
+                        ir.append(_node("meta", ["<<<thinking"], _sec=sec, _blk=blk))
+                        blk += 1
+                        has_any = True
+                    continue
+                if bt == "redactedThinking":
+                    ir.append(_node("meta", [">>>redacted_thinking"], _sec=sec, _blk=blk))
+                    ir.append(
+                        _node(
+                            "redacted_thinking",
+                            ["[content redacted by model provider]"],
+                            searchable=True,
+                            _sec=sec,
+                            _blk=blk,
+                        )
+                    )
+                    ir.append(_node("meta", ["<<<redacted_thinking"], _sec=sec, _blk=blk))
+                    blk += 1
+                    has_any = True
+                    continue
+                if bt == "toolCall":
+                    name = block.get("name", "unknown")
+                    call_id = block.get("id", "")
+                    args = block.get("arguments")
+                    if not isinstance(args, dict):
+                        args = {}
+                    summary = _tool_summary(name, args)
+                    ir.append(
+                        _node(
+                            "meta",
+                            [f">>>tool_call {name}:{_short_tid(call_id)}"],
+                            _sec=sec,
+                            _blk=blk,
+                            _tool_summary=summary,
+                        )
+                    )
+                    lines = _structured_lines(args)
+                    if lines:
+                        ir.append(_node("tool_call", lines, searchable=True, _sec=sec, _blk=blk))
+                    ir.append(_node("meta", ["<<<tool_call"], _sec=sec, _blk=blk))
+                    blk += 1
+                    has_any = True
+                    continue
+                if bt == "image":
+                    ir.append(_node("assistant_image", ["[image]"], searchable=True, _sec=sec, _blk=blk))
+                    blk += 1
+                    has_any = True
+
+            if has_any:
+                sec += 1
+            else:
+                del ir[mark:]
+                blk = saved_blk
+            continue
+
+        if role == "toolResult":
+            name = message.get("toolName", "unknown")
+            call_id = message.get("toolCallId", "")
+            label = "[tool_error]" if message.get("isError") else "[tool]"
+            _emit_text_section(f"{label} {name}:{_short_tid(call_id)}", "tool_result", _omp_tool_result_lines(message))
+            continue
+
+        if role in {"custom", "hookMessage"}:
+            custom_type = message.get("customType") or role
+            _emit_text_section(f"[custom] {custom_type}", "custom", _omp_custom_lines(message))
+            continue
+
+        if role == "branchSummary":
+            lines = _sanitize(message.get("summary", "")).split("\n") if message.get("summary") else []
+            if message.get("fromId"):
+                lines = [f"from: {message.get('fromId')}", ""] + lines
+            _emit_text_section("[branch]", "branch", lines)
+            continue
+
+        if role == "compactionSummary":
+            lines = _sanitize(message.get("summary", "")).split("\n") if message.get("summary") else []
+            _emit_text_section("[compaction]", "compaction", lines)
+            continue
+
+        if role == "fileMention":
+            _emit_text_section("[file]", "file", _omp_file_mention_lines(message))
+            continue
+
+        if role == "bashExecution":
+            _emit_text_section("[bash]", "bash", _omp_execution_lines(message, "command"))
+            continue
+
+        if role == "pythonExecution":
+            _emit_text_section("[python]", "python", _omp_execution_lines(message, "code"))
+            continue
 
     ir.append(_node("meta", [""]))
     return ir
@@ -1339,6 +1677,9 @@ def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
     if src_format == "codex":
         recs = raw_recs
         chains = split_codex_chains(recs)
+    elif src_format == "omp":
+        recs = raw_recs
+        chains = split_omp_chains(recs)
     else:
         recs = merge_chunks(raw_recs)
         chains = split_chains(recs)
@@ -1361,6 +1702,8 @@ def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
 
         if src_format == "codex":
             ir = parse_codex(chain, output_dir, f"{base}{sfx}", data_ctr)
+        elif src_format == "omp":
+            ir = parse_omp(chain, output_dir, f"{base}{sfx}", data_ctr)
         else:
             ir = parse(chain, output_dir, f"{base}{sfx}", data_ctr)
         assign_lines(ir)

@@ -4,75 +4,78 @@
 
 Unofficial implementation of "View-oriented Conversation Compiler for Agent Trace Analysis" ([Paper](https://arxiv.org/abs/2603.29678)).
 
-This fork targets Codex user-level skills and Codex rollout logs under `~/.codex/sessions`.
+This fork targets user-level skills and session logs for both Codex and OMP, without modifying either harness source tree.
 
 ## What This Fork Does
 
-VCC compiles Codex rollout JSONL files into:
+VCC compiles Codex rollout JSONL files and OMP session JSONL files into:
 
 - `.txt`: full transcript
 - `.min.txt`: brief UI-oriented view
-- `.view.txt`: adaptive search projection when `--grep` is used
+- `.view.txt`: adaptive search projection when `xcc search` is used
 
 The key invariant from the paper stays the same: line numbers are assigned once in the full view, and every other view points back into that same coordinate system.
 
-## Important Codex Notes
+## History Sources
 
 - Use rollout files from `~/.codex/sessions/**/*.jsonl`.
 - Do not use `~/.codex/history.jsonl` for VCC. It is only prompt history, not a full transcript.
+- Use OMP session files from `${PI_CODING_AGENT_DIR:-~/.omp/agent}/sessions/**/*.jsonl`.
 - Codex reasoning is hidden in this fork. Real rollouts persist reasoning as encrypted content, so VCC does not attempt to render it.
-- Codex compaction is split into numbered chunks automatically. Newer chunks get larger suffixes.
+- Codex compaction and OMP compaction are split into numbered chunks automatically. Newer chunks get larger suffixes.
 
 ## Install
 
 See [INSTALL.md](INSTALL.md).
 
-The supported install surface for this fork is:
+The supported skill install surface for this fork is:
 
 `~/.codex/skills/{conversation-compiler,readchat,recall,searchchat}`
 
+and, for OMP:
+
+`${PI_CODING_AGENT_DIR:-~/.omp/agent}/skills/{conversation-compiler,readchat,recall,searchchat}`
+
 ## Basic Usage
 
-Find the latest rollout for the current project:
+The cross-harness CLI is `xcc`:
 
 ```bash
-python "~/.codex/skills/conversation-compiler/scripts/find_codex_rollouts.py" --cwd "$PWD" --latest
+uv --project /home/crosstyan/Code/VCC run xcc list --harness all --cwd "$PWD" --limit 20
 ```
 
-Compile one rollout:
+Search recent sessions from both harnesses:
 
 ```bash
-python "~/.codex/skills/conversation-compiler/scripts/VCC.py" "/absolute/path/to/rollout.jsonl"
+uv --project /home/crosstyan/Code/VCC run xcc search "keyword" --harness all --cwd "$PWD"
 ```
 
-Search one or more rollouts:
+Read a search result ref:
 
 ```bash
-python "~/.codex/skills/conversation-compiler/scripts/VCC.py" "/absolute/path/to/rollout.jsonl" --grep "keyword"
+uv --project /home/crosstyan/Code/VCC run xcc read "/absolute/path/to/session.txt:24-31"
 ```
 
-Search recent rollouts for the current project:
+Compile one explicit Codex or OMP session file:
 
 ```bash
-python "~/.codex/skills/conversation-compiler/scripts/VCC.py" \
-  $(python "~/.codex/skills/conversation-compiler/scripts/find_codex_rollouts.py" --cwd "$PWD" --limit 20) \
-  --grep "keyword"
+uv --project /home/crosstyan/Code/VCC run xcc compile "/absolute/path/to/session.jsonl"
 ```
 
-## Codex Skills
+## Skills
 
-This fork ships four Codex skills:
+This fork ships four skills:
 
 - `conversation-compiler`
 - `readchat`
 - `recall`
 - `searchchat`
 
-After installation, ask Codex to use those skills directly. The wrapper skills route into `conversation-compiler`.
+After installation, ask Codex or OMP to use those skills directly. The wrapper skills route into `conversation-compiler`.
 
 ## How It Works
 
-A Codex rollout contains structured items such as:
+Codex rollouts contain structured items such as:
 
 - `session_meta`
 - `response_item.message`
@@ -88,6 +91,8 @@ VCC lowers those records into:
 - an adaptive block-preserving search view
 
 Unlike flat `grep`, the adaptive view preserves role and block boundaries and gives exact pointers back into the full view.
+
+OMP sessions use `type: "session"` headers plus append-only entries such as `message`, `model_change`, `compaction`, `branch_summary`, and `custom_message`. The `xcc` CLI discovers both harnesses, compiles each session through the same VCC views, and emits refs that `xcc read` can resolve.
 
 ## Example
 
@@ -134,9 +139,10 @@ Command: /usr/bin/zsh -lc 'pwd && ls -la'
 
 ## Repository Layout
 
-- `skills/conversation-compiler/scripts/VCC.py`: compiler
-- `skills/conversation-compiler/scripts/find_codex_rollouts.py`: Codex rollout discovery helper
-- `skills/*/SKILL.md`: Codex skill definitions
+- `pyproject.toml`: PEP 621 package metadata for the `vcc-history` uv project
+- `src/vcc_history/xcc.py`: typed Click cross-harness CLI
+- `skills/conversation-compiler/scripts/VCC.py`: compiler implementation used by the CLI
+- `skills/*/SKILL.md`: skill definitions
 
 ## Paper
 
