@@ -1,11 +1,11 @@
 ---
 name: conversation-compiler
-description: "VCC for Codex and OMP. Compile and search session JSONL logs across harnesses into full, brief, and adaptive views."
+description: "VCC for Codex, OMP, and Reasonix. Compile and search session JSONL logs across harnesses into full, brief, and adaptive views."
 ---
 
-# VCC for Codex and OMP
+# VCC for Codex, OMP, and Reasonix
 
-Compile Codex rollout JSONL logs from `~/.codex/sessions/**/*.jsonl` and OMP session logs from `~/.omp/agent/sessions/**/*.jsonl` into agent-friendly views.
+Compile Codex rollout JSONL logs from `~/.codex/sessions/**/*.jsonl`, OMP session logs from `~/.omp/agent/sessions/**/*.jsonl`, and Reasonix session logs from `${REASONIX_HOME:-~/.reasonix}` into agent-friendly views.
 
 ## Usage
 
@@ -26,6 +26,7 @@ uv --project "${VCC_ROOT:-/home/crosstyan/Code/VCC}" run xcc <command> [options]
 
 - Use Codex rollout files from `~/.codex/sessions`, not `~/.codex/history.jsonl`. `history.jsonl` is prompt history only and is not a full transcript.
 - Use OMP session files from `${PI_CODING_AGENT_DIR:-~/.omp/agent}/sessions`, not rendered exports.
+- Use Reasonix session files from `${REASONIX_HOME:-~/.reasonix}/sessions` and `${REASONIX_HOME:-~/.reasonix}/projects/*/sessions`, not rendered exports.
 - Prefer `xcc search` for cross-harness history search. Do not replace it with system `grep` or `rg`.
 - Do not use `-o` unless the user explicitly asks for a separate output directory.
 - Leave compiled output files in place unless the user explicitly asks to remove them.
@@ -35,7 +36,7 @@ uv --project "${VCC_ROOT:-/home/crosstyan/Code/VCC}" run xcc <command> [options]
 
 **1. Search across harnesses**
 
-Search recent current-project sessions from both harnesses:
+Search recent current-project sessions from all supported harnesses:
 
 ```bash
 uv --project "${VCC_ROOT:-/home/crosstyan/Code/VCC}" run xcc search "keyword" --harness all --cwd "$PWD"
@@ -59,7 +60,7 @@ List recent sessions:
 uv --project "${VCC_ROOT:-/home/crosstyan/Code/VCC}" run xcc list --harness all --cwd "$PWD" --limit 20
 ```
 
-Compile explicit Codex or OMP JSONL files:
+Compile explicit Codex, OMP, or Reasonix JSONL files:
 
 ```bash
 uv --project "${VCC_ROOT:-/home/crosstyan/Code/VCC}" run xcc compile "/absolute/path/to/session.jsonl"
@@ -79,9 +80,9 @@ All references resolve against `.txt`, which is the canonical line-number coordi
 
 # Skills
 
-## `readchat` - Read a specific Codex or OMP session
+## `readchat` - Read a specific Codex, OMP, or Reasonix session
 
-Trigger when the user wants to inspect a specific session JSONL file, thread file, or a path under `~/.codex/sessions` / `${PI_CODING_AGENT_DIR:-~/.omp/agent}/sessions`.
+Trigger when the user wants to inspect a specific session JSONL file, thread file, or a path under `~/.codex/sessions`, `${PI_CODING_AGENT_DIR:-~/.omp/agent}/sessions`, or `${REASONIX_HOME:-~/.reasonix}`.
 
 Action:
 
@@ -89,9 +90,9 @@ Action:
 2. Read the newest `.min.txt` chunk first.
 3. Use `xcc search` and `.txt` line jumps as needed.
 
-## `searchchat` - Search across Codex and OMP sessions
+## `searchchat` - Search across Codex, OMP, and Reasonix sessions
 
-Trigger when the user wants to search prior Codex or OMP sessions.
+Trigger when the user wants to search prior Codex, OMP, or Reasonix sessions.
 
 Action:
 
@@ -99,7 +100,7 @@ Action:
 2. If no useful results appear, broaden by omitting `--cwd`.
 3. Read relevant refs with `uv --project "${VCC_ROOT:-/home/crosstyan/Code/VCC}" run xcc read "<ref>"`.
 
-## `recall` - Recover context from recent Codex or OMP sessions
+## `recall` - Recover context from recent Codex, OMP, or Reasonix sessions
 
 Trigger when the user asks to recall prior context, continue previous work, or recover what was discussed earlier.
 

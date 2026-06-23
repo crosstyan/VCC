@@ -1,0 +1,6 @@
+{"role":"system","content":"Reasonix system prompt should stay out of the brief view."}
+{"role":"user","content":"please inspect Reasonix VCC history","images":["data:image/png;base64,AAAA"]}
+{"role":"assistant","content":"I will inspect the saved session.","reasoning_content":"private Reasonix reasoning text","tool_calls":[{"id":"call_01_abcdef123456","name":"read_file","arguments":"{\"path\":\"internal/history/search.go\"}"},{"id":"call_02_bash987654","name":"bash","arguments":"{\"command\":\"go test ./internal/history\"}"}]}
+{"role":"tool","tool_call_id":"call_01_abcdef123456","name":"read_file","content":"package history\nfunc Search() {}"}
+{"role":"tool","tool_call_id":"call_02_bash987654","name":"bash","content":"error: command exited: exit status 1\nFAIL"}
+{"role":"assistant","content":"Search uses BM25."}

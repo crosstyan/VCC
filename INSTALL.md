@@ -1,10 +1,10 @@
-# Installation Guide for Codex and OMP
+# Installation Guide for Codex, OMP, and Reasonix
 
 ## Requirements
 
 - Python 3.10+
 - uv
-- Codex and/or OMP
+- Codex, OMP, and/or Reasonix
 
 ## Install
 
@@ -51,6 +51,17 @@ ln -sfn /home/crosstyan/Code/VCC/skills/recall "$OMP_SKILLS_DIR/recall"
 ln -sfn /home/crosstyan/Code/VCC/skills/searchchat "$OMP_SKILLS_DIR/searchchat"
 ```
 
+Reasonix:
+
+```bash
+REASONIX_SKILLS_DIR="${REASONIX_HOME:-$HOME/.reasonix}/skills"
+mkdir -p "$REASONIX_SKILLS_DIR"
+ln -sfn /home/crosstyan/Code/VCC/skills/conversation-compiler "$REASONIX_SKILLS_DIR/conversation-compiler"
+ln -sfn /home/crosstyan/Code/VCC/skills/readchat "$REASONIX_SKILLS_DIR/readchat"
+ln -sfn /home/crosstyan/Code/VCC/skills/recall "$REASONIX_SKILLS_DIR/recall"
+ln -sfn /home/crosstyan/Code/VCC/skills/searchchat "$REASONIX_SKILLS_DIR/searchchat"
+```
+
 Restart the harness so it picks up the skills.
 
 ## Update
@@ -66,11 +77,11 @@ uv --project /home/crosstyan/Code/VCC run xcc --help
 uv --project /home/crosstyan/Code/VCC run xcc list --harness all --limit 5
 ```
 
-Then ask Codex or OMP to use `recall` or `searchchat`.
+Then ask Codex, OMP, or Reasonix to use `recall` or `searchchat`.
 
 ## Uninstall
 
-Delete these symlinks from `~/.codex/skills/` and/or `${PI_CODING_AGENT_DIR:-~/.omp/agent}/skills`:
+Delete these symlinks from `~/.codex/skills/`, `${PI_CODING_AGENT_DIR:-~/.omp/agent}/skills`, and/or `${REASONIX_HOME:-~/.reasonix}/skills`:
 
 - `conversation-compiler`
 - `readchat`
