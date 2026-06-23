@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
-xcc = "vcc_history.xcc:main"
+xcc = "vcc_history.cli:main"
 
 [build-system]
 requires = ["hatchling>=1.25"]

@@ -15,7 +15,10 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from vcc_history import xcc
+from vcc_history.cli import main
+from vcc_history.history import service
+from vcc_history.history.compiler import reset_compiler_cache
+from vcc_history.history.refs import read_ref
 
 
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -117,7 +120,7 @@ class XccTests(unittest.TestCase):
         os.environ["VCC_CACHE_DIR"] = str(self.root / "cache")
         os.environ["VCC_COMPILER_PATH"] = str(VCC_PATH)
         os.environ["VCC_ROOT"] = str(ROOT)
-        xcc._VCC_MODULE = None
+        reset_compiler_cache()
 
     def tearDown(self):
         for key, value in self.original_env.items():
@@ -125,11 +128,11 @@ class XccTests(unittest.TestCase):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
-        xcc._VCC_MODULE = None
+        reset_compiler_cache()
         self.tmp.cleanup()
 
     def test_collect_sessions_reads_codex_and_omp_metadata(self):
-        records = xcc.collect_sessions("all")
+        records = service.collect_sessions("all")
 
         self.assertEqual({record["harness"] for record in records}, {"codex", "omp", "reasonix"})
         omp = next(record for record in records if record["harness"] == "omp")
@@ -149,18 +152,18 @@ class XccTests(unittest.TestCase):
         self.assertNotIn(str(self.reasonix_cleanup_session), {record["path"] for record in records})
 
     def test_search_cli_returns_readable_omp_refs(self):
-        result = CliRunner().invoke(xcc.main, ["search", "OMP repo", "--harness", "omp", "--json"])
+        result = CliRunner().invoke(main, ["search", "OMP repo", "--harness", "omp", "--json"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         hits = json.loads(result.output)
         self.assertGreaterEqual(len(hits), 1)
         self.assertEqual(hits[0]["harness"], "omp")
         self.assertIn("omp_basic.txt:", hits[0]["ref"])
-        self.assertIn("OMP repo history", xcc.read_ref(hits[0]["ref"]))
+        self.assertIn("OMP repo history", read_ref(hits[0]["ref"]))
 
     def test_reasonix_cwd_filter_and_search_refs_are_readable(self):
         result = CliRunner().invoke(
-            xcc.main,
+            main,
             ["list", "--harness", "reasonix", "--cwd", "/tmp/reasonix-project", "--json"],
         )
 
@@ -172,7 +175,7 @@ class XccTests(unittest.TestCase):
         self.assertNotIn(str(self.reasonix_cleanup_session), paths)
 
         result = CliRunner().invoke(
-            xcc.main,
+            main,
             ["search", "Reasonix VCC", "--harness", "reasonix", "--json"],
         )
 
@@ -180,7 +183,7 @@ class XccTests(unittest.TestCase):
         hits = json.loads(result.output)
         self.assertGreaterEqual(len(hits), 1)
         self.assertTrue(all(hit["harness"] == "reasonix" for hit in hits))
-        self.assertTrue(any("Reasonix VCC history" in xcc.read_ref(hit["ref"]) for hit in hits))
+        self.assertTrue(any("Reasonix VCC history" in read_ref(hit["ref"]) for hit in hits))
 
     def test_t3code_sqlite_threads_are_discovered_and_searchable(self):
         db_path = self.t3_home / "userdata" / "state.sqlite"
@@ -337,17 +340,17 @@ class XccTests(unittest.TestCase):
                 ),
             )
 
-        records = xcc.collect_sessions("t3code")
+        records = service.collect_sessions("t3code")
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["harness"], "t3code")
         self.assertEqual(records[0]["cwd"], "/tmp/t3-project")
 
-        result = CliRunner().invoke(xcc.main, ["search", "T3 Code history", "--harness", "t3code", "--json"])
+        result = CliRunner().invoke(main, ["search", "T3 Code history", "--harness", "t3code", "--json"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         hits = json.loads(result.output)
         self.assertEqual(hits[0]["harness"], "t3code")
-        self.assertIn("please inspect the T3 Code history", xcc.read_ref(hits[0]["ref"]))
+        self.assertIn("please inspect the T3 Code history", read_ref(hits[0]["ref"]))
 
 
 if __name__ == "__main__":

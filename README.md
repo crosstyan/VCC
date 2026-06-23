@@ -148,7 +148,10 @@ Command: /usr/bin/zsh -lc 'pwd && ls -la'
 ## Repository Layout
 
 - `pyproject.toml`: PEP 621 package metadata for the `vcc-history` uv project
-- `src/vcc_history/xcc.py`: typed Click cross-harness CLI
+- `src/vcc_history/cli.py`: typed Click frontend for the `xcc` command
+- `src/vcc_history/history/service.py`: cross-harness history orchestration
+- `src/vcc_history/history/sources/`: Codex, OMP, T3 Code, and Reasonix history adapters
+- `src/vcc_history/history/compiler.py`: bridge into the VCC compiler script
 - `skills/conversation-compiler/scripts/VCC.py`: compiler implementation used by the CLI
 - `skills/*/SKILL.md`: skill definitions
 
