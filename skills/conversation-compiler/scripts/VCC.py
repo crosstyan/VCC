@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""View-oriented Conversation Compiler (VCC) internals for Codex and OMP JSONL logs.
+"""View-oriented Conversation Compiler (VCC) internals for Codex, OMP, T3 Code, and Reasonix logs.
 
 Produces per conversation chain:
   .txt       Full transcript (lossless rendering of JSONL)
@@ -7,8 +7,8 @@ Produces per conversation chain:
   .view.txt  View mode (search-focused, written by xcc search)
 
 Usage:
-  uv --project /home/crosstyan/Code/VCC run xcc compile conversation.jsonl
-  uv --project /home/crosstyan/Code/VCC run xcc search "kw" --harness all
+  uv --project /Users/crosstyan/Code/VCC run xcc compile conversation.jsonl
+  uv --project /Users/crosstyan/Code/VCC run xcc search "kw" --harness all
 """
 
 import argparse
@@ -161,6 +161,8 @@ def detect_format(recs):
             return "omp"
         if rt in {"session_meta", "response_item", "event_msg", "turn_context", "compacted"}:
             return "codex"
+        if r.get("role") in {"system", "user", "assistant", "tool"}:
+            return "reasonix"
         if rt in {"assistant", "user", "system"}:
             return "claude"
     return "claude"
@@ -394,6 +396,8 @@ _TOOL_SUMMARY_FIELDS = {
     "spawn_agent": "message", "send_input": "message",
     "wait_agent": "target", "close_agent": "target",
     "view_image": "path", "request_user_input": "questions",
+    "read_file": "path", "write_file": "path", "edit_file": "path",
+    "multi_edit": "path", "list_files": "path", "grep": "pattern",
 }
 
 def _tool_summary(name, inp):
@@ -1203,6 +1207,202 @@ def parse_omp(
     return ir
 
 
+def _reasonix_text_lines(content: object) -> list[str]:
+    if isinstance(content, str):
+        text = _sanitize(content)
+        return text.split("\n") if text else []
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                if item:
+                    parts.append(_sanitize(item))
+                continue
+            if not isinstance(item, dict):
+                continue
+            if isinstance(item.get("text"), str):
+                parts.append(_sanitize(item.get("text")))
+            elif item.get("type") == "image":
+                parts.append("[image]")
+            elif item.get("type") in {"document", "file"}:
+                parts.append("[document]")
+            elif item.get("type"):
+                parts.append(f"[{item.get('type')}]")
+        return _sanitize("\n\n".join(parts)).split("\n") if parts else []
+    if isinstance(content, dict):
+        return _structured_lines(content)
+    return []
+
+
+def _reasonix_image_lines(images: object) -> list[str]:
+    if not isinstance(images, list):
+        return []
+    return ["[image]" for image in images if image]
+
+
+def _reasonix_tool_input(arguments: object) -> dict[str, object]:
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str):
+        parsed = _maybe_json_string(arguments)
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list):
+            return {"arguments": parsed}
+        if arguments.strip():
+            return {"arguments": arguments}
+    if isinstance(arguments, list):
+        return {"arguments": arguments}
+    return {}
+
+
+def _reasonix_tool_lines(arguments: object) -> list[str]:
+    tool_input = _reasonix_tool_input(arguments)
+    if tool_input:
+        return _structured_lines(tool_input)
+    return []
+
+
+def _reasonix_is_tool_error(content: object) -> bool:
+    text = content if isinstance(content, str) else "\n".join(_structured_lines(content))
+    lowered = text.strip().lower()
+    return (
+        lowered.startswith("error:")
+        or lowered.startswith("blocked:")
+        or "permission denied" in lowered
+    )
+
+
+def parse_reasonix(
+    chain: list[dict[str, Any]],
+    outdir: str,
+    data_prefix: str,
+    data_ctr: list[int],
+) -> list[dict[str, Any]]:
+    del outdir, data_prefix, data_ctr
+    ir = []
+    sec = 0
+    blk = 0
+
+    call_names = {}
+    for msg in chain:
+        if msg.get("role") != "assistant":
+            continue
+        calls = msg.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            call_id = call.get("id")
+            name = call.get("name")
+            if call_id and name:
+                call_names[call_id] = name
+
+    def _emit_sep() -> None:
+        if sec > 0:
+            ir.append(_node("meta", ["", SEP]))
+
+    def _emit_header(h: str) -> None:
+        ir.append(_node("meta_header", [h, ""], _sec=sec))
+
+    def _emit_text_section(label: str, node_type: str, lines: list[str], searchable: bool = True) -> None:
+        nonlocal sec, blk
+        if not lines:
+            return
+        _emit_sep()
+        _emit_header(label)
+        ir.append(_node(node_type, lines, searchable=searchable, _sec=sec, _blk=blk))
+        blk += 1
+        sec += 1
+
+    for msg in chain:
+        role = msg.get("role")
+
+        if role in {"system", "user"}:
+            label = "[system]" if role == "system" else "[user]"
+            node_type = "system" if role == "system" else "user"
+            lines = _reasonix_text_lines(msg.get("content"))
+            image_lines = _reasonix_image_lines(msg.get("images"))
+            if image_lines:
+                lines = lines + ([""] if lines else []) + image_lines
+            _emit_text_section(label, node_type, lines)
+            continue
+
+        if role == "assistant":
+            mark = len(ir)
+            saved_blk = blk
+            _emit_sep()
+            _emit_header("[assistant]")
+            has_any = False
+
+            reasoning = msg.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning:
+                ir.append(_node("meta", [">>>thinking"], _sec=sec, _blk=blk))
+                ir.append(_node("thinking", _sanitize(reasoning).split("\n"), searchable=True, _sec=sec, _blk=blk))
+                ir.append(_node("meta", ["<<<thinking"], _sec=sec, _blk=blk))
+                blk += 1
+                has_any = True
+
+            lines = _reasonix_text_lines(msg.get("content"))
+            if lines:
+                ir.append(_node("assistant", lines, searchable=True, _sec=sec, _blk=blk))
+                blk += 1
+                has_any = True
+
+            image_lines = _reasonix_image_lines(msg.get("images"))
+            if image_lines:
+                ir.append(_node("assistant_image", image_lines, searchable=True, _sec=sec, _blk=blk))
+                blk += 1
+                has_any = True
+
+            calls = msg.get("tool_calls")
+            if isinstance(calls, list):
+                for call in calls:
+                    if not isinstance(call, dict):
+                        continue
+                    name = call.get("name") or "unknown"
+                    call_id = call.get("id") or ""
+                    arguments = call.get("arguments")
+                    tool_input = _reasonix_tool_input(arguments)
+                    summary = _tool_summary(name, tool_input)
+                    ir.append(
+                        _node(
+                            "meta",
+                            [f">>>tool_call {name}:{_short_tid(call_id)}"],
+                            _sec=sec,
+                            _blk=blk,
+                            _tool_summary=summary,
+                        )
+                    )
+                    arg_lines = _reasonix_tool_lines(arguments)
+                    if arg_lines:
+                        ir.append(_node("tool_call", arg_lines, searchable=True, _sec=sec, _blk=blk))
+                    ir.append(_node("meta", ["<<<tool_call"], _sec=sec, _blk=blk))
+                    blk += 1
+                    has_any = True
+
+            if has_any:
+                sec += 1
+            else:
+                del ir[mark:]
+                blk = saved_blk
+            continue
+
+        if role == "tool":
+            call_id = msg.get("tool_call_id") or ""
+            name = msg.get("name") or call_names.get(call_id, "unknown")
+            content = msg.get("content")
+            is_error = _reasonix_is_tool_error(content)
+            label = "[tool_error]" if is_error else "[tool]"
+            node_type = "tool_error" if is_error else "tool_result"
+            _emit_text_section(f"{label} {name}:{_short_tid(call_id)}", node_type, _reasonix_text_lines(content))
+            continue
+
+    ir.append(_node("meta", [""]))
+    return ir
+
+
 def parse_t3code(
     chain: list[dict[str, Any]],
     outdir: str,
@@ -1760,6 +1960,9 @@ def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
     elif src_format == "t3code":
         recs = raw_recs
         chains = split_t3code_chains(recs)
+    elif src_format == "reasonix":
+        recs = raw_recs
+        chains = [recs]
     else:
         recs = merge_chunks(raw_recs)
         chains = split_chains(recs)
@@ -1786,6 +1989,8 @@ def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
             ir = parse_omp(chain, output_dir, f"{base}{sfx}", data_ctr)
         elif src_format == "t3code":
             ir = parse_t3code(chain, output_dir, f"{base}{sfx}", data_ctr)
+        elif src_format == "reasonix":
+            ir = parse_reasonix(chain, output_dir, f"{base}{sfx}", data_ctr)
         else:
             ir = parse(chain, output_dir, f"{base}{sfx}", data_ctr)
         assign_lines(ir)

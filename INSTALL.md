@@ -1,10 +1,10 @@
-# Installation Guide for Codex, OMP, and T3 Code History
+# Installation Guide for Codex, OMP, T3 Code History, and Reasonix
 
 ## Requirements
 
 - Python 3.10+
 - uv
-- Codex and/or OMP
+- Codex, OMP, and/or Reasonix
 - T3 Code is optional; VCC reads its history from SQLite when `${T3CODE_HOME:-~/.t3}` exists.
 
 ## Install
@@ -54,6 +54,19 @@ if [ -d "$(dirname "$OMP_SKILLS_DIR")" ]; then
 fi
 ```
 
+Reasonix:
+
+```bash
+REASONIX_SKILLS_DIR="${REASONIX_HOME:-$HOME/.reasonix}/skills"
+if [ -d "$(dirname "$REASONIX_SKILLS_DIR")" ]; then
+  mkdir -p "$REASONIX_SKILLS_DIR"
+  ln -sfn /Users/crosstyan/Code/VCC/skills/conversation-compiler "$REASONIX_SKILLS_DIR/conversation-compiler"
+  ln -sfn /Users/crosstyan/Code/VCC/skills/readchat "$REASONIX_SKILLS_DIR/readchat"
+  ln -sfn /Users/crosstyan/Code/VCC/skills/recall "$REASONIX_SKILLS_DIR/recall"
+  ln -sfn /Users/crosstyan/Code/VCC/skills/searchchat "$REASONIX_SKILLS_DIR/searchchat"
+fi
+```
+
 Restart the harness so it picks up the skills.
 
 T3 Code does not need skill installation for history search. `xcc --harness t3code` reads `${T3CODE_HOME:-~/.t3}/userdata/state.sqlite` and `${T3CODE_HOME:-~/.t3}/dev/state.sqlite` if present. Override with `VCC_T3CODE_DB=/path/to/state.sqlite`.
@@ -70,13 +83,14 @@ Run:
 uv --project /Users/crosstyan/Code/VCC run xcc --help
 uv --project /Users/crosstyan/Code/VCC run xcc list --harness all --limit 5
 uv --project /Users/crosstyan/Code/VCC run xcc list --harness t3code --limit 5
+uv --project /Users/crosstyan/Code/VCC run xcc list --harness reasonix --limit 5
 ```
 
-Then ask Codex or OMP to use `recall` or `searchchat`.
+Then ask Codex, OMP, or Reasonix to use `recall` or `searchchat`.
 
 ## Uninstall
 
-Delete these symlinks from `~/.codex/skills/` and/or `${PI_CODING_AGENT_DIR:-~/.omp/agent}/skills`:
+Delete these symlinks from `~/.codex/skills/`, `${PI_CODING_AGENT_DIR:-~/.omp/agent}/skills`, and/or `${REASONIX_HOME:-~/.reasonix}/skills`:
 
 - `conversation-compiler`
 - `readchat`

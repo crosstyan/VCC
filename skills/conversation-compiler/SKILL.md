@@ -1,11 +1,11 @@
 ---
 name: conversation-compiler
-description: "VCC for Codex, OMP, and T3 Code. Compile and search session history across harnesses into full, brief, and adaptive views."
+description: "VCC for Codex, OMP, T3 Code, and Reasonix. Compile and search session history across harnesses into full, brief, and adaptive views."
 ---
 
-# VCC for Codex, OMP, and T3 Code
+# VCC for Codex, OMP, T3 Code, and Reasonix
 
-Compile Codex rollout JSONL logs from `~/.codex/sessions/**/*.jsonl`, OMP session logs from `~/.omp/agent/sessions/**/*.jsonl`, and T3 Code threads from `${T3CODE_HOME:-~/.t3}/{userdata,dev}/state.sqlite` into agent-friendly views.
+Compile Codex rollout JSONL logs from `~/.codex/sessions/**/*.jsonl`, OMP session logs from `~/.omp/agent/sessions/**/*.jsonl`, T3 Code threads from `${T3CODE_HOME:-~/.t3}/{userdata,dev}/state.sqlite`, and Reasonix sessions from `${REASONIX_HOME:-~/.reasonix}/{sessions,projects/*/sessions}/**/*.jsonl` into agent-friendly views.
 
 ## Usage
 
@@ -27,6 +27,7 @@ uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc <command> [options
 - Use Codex rollout files from `~/.codex/sessions`, not `~/.codex/history.jsonl`. `history.jsonl` is prompt history only and is not a full transcript.
 - Use OMP session files from `${PI_CODING_AGENT_DIR:-~/.omp/agent}/sessions`, not rendered exports.
 - Use T3 Code history from `${T3CODE_HOME:-~/.t3}/{userdata,dev}/state.sqlite`. T3 Code stores its UI thread index in SQLite. For Codex-backed T3 threads, `xcc` prefers the underlying Codex rollout found through T3 provider logs when available; otherwise it exports the SQLite projection to an explicit `t3code` JSONL cache.
+- Use Reasonix sessions from `${REASONIX_HOME:-~/.reasonix}/sessions` and `${REASONIX_HOME:-~/.reasonix}/projects/*/sessions`.
 - Missing harness stores are skipped automatically when `--harness all` is used.
 - Prefer `xcc search` for cross-harness history search. Do not replace it with system `grep` or `rg`.
 - Do not use `-o` unless the user explicitly asks for a separate output directory.
@@ -61,7 +62,7 @@ List recent sessions:
 uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc list --harness all --cwd "$PWD" --limit 20
 ```
 
-Compile explicit Codex/OMP/T3 JSONL files, or a T3 `state.sqlite`:
+Compile explicit Codex/OMP/T3/Reasonix JSONL files, or a T3 `state.sqlite`:
 
 ```bash
 uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc compile "/absolute/path/to/session.jsonl"
@@ -81,9 +82,9 @@ All references resolve against `.txt`, which is the canonical line-number coordi
 
 # Skills
 
-## `readchat` - Read a specific Codex, OMP, or T3 Code session
+## `readchat` - Read a specific Codex, OMP, T3 Code, or Reasonix session
 
-Trigger when the user wants to inspect a specific session JSONL file, thread file, T3 `state.sqlite`, or a path under `~/.codex/sessions` / `${PI_CODING_AGENT_DIR:-~/.omp/agent}/sessions`.
+Trigger when the user wants to inspect a specific session JSONL file, thread file, T3 `state.sqlite`, or a path under `~/.codex/sessions` / `${PI_CODING_AGENT_DIR:-~/.omp/agent}/sessions` / `${REASONIX_HOME:-~/.reasonix}/sessions`.
 
 Action:
 
@@ -91,9 +92,9 @@ Action:
 2. Read the newest `.min.txt` chunk first.
 3. Use `xcc search` and `.txt` line jumps as needed.
 
-## `searchchat` - Search across Codex, OMP, and T3 Code sessions
+## `searchchat` - Search across Codex, OMP, T3 Code, and Reasonix sessions
 
-Trigger when the user wants to search prior Codex, OMP, or T3 Code sessions.
+Trigger when the user wants to search prior Codex, OMP, T3 Code, or Reasonix sessions.
 
 Action:
 
@@ -101,7 +102,7 @@ Action:
 2. If no useful results appear, broaden by omitting `--cwd`.
 3. Read relevant refs with `uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc read "<ref>"`.
 
-## `recall` - Recover context from recent Codex, OMP, or T3 Code sessions
+## `recall` - Recover context from recent Codex, OMP, T3 Code, or Reasonix sessions
 
 Trigger when the user asks to recall prior context, continue previous work, or recover what was discussed earlier.
 

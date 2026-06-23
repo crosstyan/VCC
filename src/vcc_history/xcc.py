@@ -18,8 +18,8 @@ from urllib.parse import quote, unquote
 
 import click
 
-Harness = Literal["omp", "codex", "t3code"]
-HarnessFilter = Literal["all", "omp", "codex", "t3code"]
+Harness = Literal["omp", "codex", "t3code", "reasonix"]
+HarnessFilter = Literal["all", "omp", "codex", "t3code", "reasonix"]
 
 
 class SessionRecord(TypedDict, total=False):
@@ -87,6 +87,10 @@ def _t3code_base_dir() -> Path:
     return Path(os.environ.get("T3CODE_HOME", "~/.t3")).expanduser()
 
 
+def _reasonix_home() -> Path:
+    return Path(os.environ.get("REASONIX_HOME", "~/.reasonix")).expanduser()
+
+
 def _cache_dir() -> Path:
     return Path(os.environ.get("VCC_CACHE_DIR", "~/.cache/vcc-history")).expanduser()
 
@@ -118,6 +122,14 @@ def _read_first_json(path: str) -> dict[str, object] | None:
     return None
 
 
+def _read_json_file(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _read_model_change(path: str, limit: int = 64) -> str | None:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -134,6 +146,15 @@ def _read_model_change(path: str, limit: int = 64) -> str | None:
     except (OSError, ValueError, TypeError):
         return None
     return None
+
+
+def _split_model_ref(model: str | None) -> tuple[str | None, str | None]:
+    if not model:
+        return None, None
+    if "/" in model:
+        provider, model_id = model.split("/", 1)
+        return provider, model_id
+    return None, model
 
 
 def _codex_record(path: str) -> SessionRecord | None:
@@ -160,10 +181,7 @@ def _omp_record(path: str) -> SessionRecord | None:
     if not obj or obj.get("type") != "session":
         return None
     model = _read_model_change(path) or _string_or_none(obj.get("modelId") or obj.get("model"))
-    provider = None
-    model_id = model
-    if model and "/" in model:
-        provider, model_id = model.split("/", 1)
+    provider, model_id = _split_model_ref(model)
     return {
         "harness": "omp",
         "path": os.path.abspath(path),
@@ -529,6 +547,130 @@ def _t3code_records_from_db(db_path: Path) -> list[SessionRecord]:
     return records
 
 
+def _reasonix_cleanup_pending(path: str) -> bool:
+    return Path(path).with_suffix(".cleanup-pending.json").exists()
+
+
+def _reasonix_model_from_filename(path: str) -> str | None:
+    stem = Path(path).stem
+    match = re.match(r"^\d{8}-\d{6}(?:\.\d+)?-(.+)$", stem)
+    return match.group(1) if match else None
+
+
+def _reasonix_timestamp_from_filename(path: str) -> str | None:
+    stem = Path(path).stem
+    match = re.match(r"^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})(\.\d+)?-", stem)
+    if not match:
+        return None
+    frac = match.group(7) or ""
+    return (
+        f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+        f"T{match.group(4)}:{match.group(5)}:{match.group(6)}{frac}Z"
+    )
+
+
+def _reasonix_workspace_slug(cwd: str) -> str:
+    return re.sub(r"[/\\\\:]", "-", os.path.abspath(cwd))
+
+
+def _reasonix_project_slug(path: str) -> str | None:
+    try:
+        rel = Path(path).resolve().relative_to((_reasonix_home() / "projects").resolve())
+    except ValueError:
+        rel = None
+    if rel and rel.parts:
+        return rel.parts[0]
+    parts = Path(path).parts
+    for index, part in enumerate(parts):
+        if part == "projects" and index + 1 < len(parts):
+            return parts[index + 1]
+    return None
+
+
+def _reasonix_sidecar(path: str) -> dict[str, object]:
+    jsonl_path = Path(path)
+    if jsonl_path.parent.name == "subagents":
+        return _read_json_file(jsonl_path.with_suffix(".meta.json"))
+    return _read_json_file(Path(path + ".meta"))
+
+
+def _reasonix_parent_cleanup_pending(path: str, meta: dict[str, object]) -> bool:
+    jsonl_path = Path(path)
+    if jsonl_path.parent.name != "subagents":
+        return False
+    parent_session = _string_or_none(meta.get("parentSession"))
+    if not parent_session:
+        return False
+    parent_path = jsonl_path.parent.parent / f"{parent_session}.jsonl"
+    return parent_path.with_suffix(".cleanup-pending.json").exists()
+
+
+def _reasonix_record(path: str) -> SessionRecord | None:
+    if _reasonix_cleanup_pending(path):
+        return None
+    obj = _read_first_json(path)
+    if not obj or obj.get("role") not in {"system", "user", "assistant", "tool"}:
+        return None
+    meta = _reasonix_sidecar(path)
+    if _reasonix_parent_cleanup_pending(path, meta):
+        return None
+    model = (
+        _string_or_none(meta.get("model"))
+        or _string_or_none(meta.get("Model"))
+        or _reasonix_model_from_filename(path)
+    )
+    provider, model_id = _split_model_ref(model)
+    session_id = (
+        _string_or_none(meta.get("id"))
+        or _string_or_none(meta.get("ref"))
+        or Path(path).stem
+    )
+    timestamp = (
+        _string_or_none(meta.get("updated_at"))
+        or _string_or_none(meta.get("updatedAt"))
+        or _string_or_none(meta.get("created_at"))
+        or _string_or_none(meta.get("createdAt"))
+        or _reasonix_timestamp_from_filename(path)
+    )
+    title = (
+        _string_or_none(meta.get("topic_title"))
+        or _string_or_none(meta.get("name"))
+        or _string_or_none(meta.get("preview"))
+    )
+    cwd = _string_or_none(meta.get("workspace_root") or meta.get("workspaceRoot"))
+    return {
+        "harness": "reasonix",
+        "path": os.path.abspath(path),
+        "session_id": session_id,
+        "timestamp": timestamp,
+        "cwd": os.path.abspath(cwd) if cwd else None,
+        "title": title,
+        "source": "subagent" if Path(path).parent.name == "subagents" else None,
+        "provider": provider,
+        "model": model_id,
+    }
+
+
+def _reasonix_session_paths() -> list[str]:
+    home = _reasonix_home()
+    patterns = [
+        home / "sessions" / "*.jsonl",
+        home / "sessions" / "subagents" / "*.jsonl",
+        home / "projects" / "*" / "sessions" / "*.jsonl",
+        home / "projects" / "*" / "sessions" / "subagents" / "*.jsonl",
+    ]
+    paths: list[str] = []
+    seen: set[str] = set()
+    for pattern in patterns:
+        for path in glob.glob(str(pattern)):
+            absolute = os.path.abspath(path)
+            if absolute in seen:
+                continue
+            seen.add(absolute)
+            paths.append(path)
+    return paths
+
+
 def collect_sessions(harness: HarnessFilter = "all") -> list[SessionRecord]:
     records: list[SessionRecord] = []
     if harness in {"all", "codex"}:
@@ -550,6 +692,11 @@ def collect_sessions(harness: HarnessFilter = "all") -> list[SessionRecord]:
     if harness in {"all", "t3code"}:
         for db_path in _t3code_db_paths():
             records.extend(_t3code_records_from_db(db_path))
+    if harness in {"all", "reasonix"}:
+        for path in _reasonix_session_paths():
+            record = _reasonix_record(path)
+            if record:
+                records.append(record)
     if harness == "all":
         deduped: dict[str, SessionRecord] = {}
         for record in records:
@@ -561,11 +708,20 @@ def collect_sessions(harness: HarnessFilter = "all") -> list[SessionRecord]:
     return records
 
 
+def _matches_cwd(record: SessionRecord, cwd: str) -> bool:
+    target = os.path.abspath(cwd)
+    record_cwd = record.get("cwd")
+    if record_cwd and os.path.abspath(record_cwd) == target:
+        return True
+    if record.get("harness") == "reasonix":
+        return _reasonix_project_slug(record["path"]) == _reasonix_workspace_slug(target)
+    return False
+
+
 def filter_sessions(records: list[SessionRecord], cwd: str | None, latest: bool, limit: int) -> list[SessionRecord]:
     filtered = records
     if cwd:
-        target = os.path.abspath(cwd)
-        filtered = [rec for rec in filtered if rec.get("cwd") == target]
+        filtered = [rec for rec in filtered if _matches_cwd(rec, cwd)]
     if latest:
         return filtered[-1:] if filtered else []
     if limit > 0:
@@ -702,26 +858,26 @@ def main() -> None:
 
 
 @main.command("list")
-@click.option("--harness", type=click.Choice(["all", "omp", "codex", "t3code"]), default="all", show_default=True)
+@click.option("--harness", type=click.Choice(["all", "omp", "codex", "t3code", "reasonix"]), default="all", show_default=True)
 @click.option("--cwd", type=click.Path(path_type=str), help="Filter by exact session cwd.")
 @click.option("--latest", is_flag=True, help="Return only the newest matching session.")
 @click.option("--limit", type=int, default=20, show_default=True)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
 def list_cmd(harness: HarnessFilter, cwd: str | None, latest: bool, limit: int, as_json: bool) -> None:
-    """List Codex, OMP, and T3 Code session files."""
+    """List Codex, OMP, T3 Code, and Reasonix session files."""
     records = filter_sessions(collect_sessions(harness), cwd, latest, limit)
     _print_records(records, as_json)
 
 
 @main.command()
 @click.argument("pattern")
-@click.option("--harness", type=click.Choice(["all", "omp", "codex", "t3code"]), default="all", show_default=True)
+@click.option("--harness", type=click.Choice(["all", "omp", "codex", "t3code", "reasonix"]), default="all", show_default=True)
 @click.option("--cwd", type=click.Path(path_type=str), help="Filter by exact session cwd.")
 @click.option("--limit", type=int, default=20, show_default=True)
 @click.option("--ignore-case", is_flag=True)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
 def search(pattern: str, harness: HarnessFilter, cwd: str | None, limit: int, ignore_case: bool, as_json: bool) -> None:
-    """Search recent Codex, OMP, and T3 Code sessions."""
+    """Search recent Codex, OMP, T3 Code, and Reasonix sessions."""
     flags = re.IGNORECASE if ignore_case else 0
     try:
         compiled = re.compile(pattern, flags)
