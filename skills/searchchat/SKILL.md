@@ -15,14 +15,21 @@ Use the installed `xcc` command. Search patterns are regular expressions.
 
    Add `--ignore-case` when appropriate.
 
-2. If relevant Claude Code work may have been delegated, retry the same search with:
+2. If relevant work may have been delegated, retry the same search with:
 
    ```bash
-   xcc search "pattern" --harness all --cwd "$PWD" --include-subagents
+   xcc search "pattern" --harness all --cwd "$PWD" --include-delegated
    ```
 
-3. If the project filter is too narrow, repeat without `--cwd`. Preserve the main-session-first order and include subagents only as a retry.
-4. Read useful refs returned by the search:
+3. If the project filter is too narrow, repeat without `--cwd`. Preserve the main-session-first order and include delegated sessions only as a retry.
+4. If the default recent-session scan still finds nothing, search exhaustively:
+
+   ```bash
+   xcc search "pattern" --harness all --session-limit 0
+   ```
+
+   Add `--include-delegated` as well if delegated work is relevant.
+5. Read useful refs returned by the search:
 
    ```bash
    xcc read "/path/to/session.txt:START-END"

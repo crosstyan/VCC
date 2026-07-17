@@ -18,7 +18,7 @@ The key invariant from the paper stays the same: line numbers are assigned once 
 
 ## History Sources
 
-- Claude Code: `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/*.jsonl`. `xcc list` and `xcc search` use main-session transcripts by default; pass `--include-subagents` to include nested `subagents/agent-*.jsonl` transcripts.
+- Claude Code: `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/*.jsonl`. `xcc list` and `xcc search` use main-session transcripts by default; pass `--include-delegated` to include nested `subagents/agent-*.jsonl` transcripts.
 - Codex: `${CODEX_HOME:-$HOME/.codex}/sessions/**/*.jsonl`. Do not use `history.jsonl`; it is prompt history, not a full transcript.
 - OMP: `${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/sessions/**/*.jsonl`.
 - T3 Code: `${T3CODE_HOME:-$HOME/.t3}/{userdata,dev}/state.sqlite`.
@@ -63,10 +63,10 @@ Search recent main sessions from all supported harnesses:
 xcc search "keyword" --harness all --cwd "$PWD"
 ```
 
-Claude Code subagent transcripts are intentionally excluded on the first pass. If the main-session search misses context that may have been delegated, retry with:
+Delegated (subagent) transcripts are intentionally excluded on the first pass for every harness. If the main-session search misses context that may have been delegated, retry with:
 
 ```bash
-xcc search "keyword" --harness all --cwd "$PWD" --include-subagents
+xcc search "keyword" --harness all --cwd "$PWD" --include-delegated
 ```
 
 Read a search result ref:

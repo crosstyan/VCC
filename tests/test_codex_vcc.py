@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import re
 import tempfile
 import unittest
@@ -50,6 +51,79 @@ class CodexVccTests(unittest.TestCase):
         self.assertNotIn("def example():", brief)
         self.assertIn('* Read "src/example.py"', brief)
         self.assertIn('* Bash "Run sanitized fixture tests"', brief)
+
+    def test_claude_brief_links_tool_results_by_full_id(self):
+        records = [
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "msg_tool_id_collision",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_first_ABCDEF",
+                            "name": "Read",
+                            "input": {"file_path": "first.txt"},
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_second_ABCDEF",
+                            "name": "Read",
+                            "input": {"file_path": "second.txt"},
+                        },
+                    ],
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_first_ABCDEF",
+                            "content": "FIRST_RESULT_MARKER",
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_second_ABCDEF",
+                            "content": "SECOND_RESULT_MARKER",
+                        },
+                    ],
+                },
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp, "claude_tid_collision.jsonl")
+            source.write_text(
+                "".join(json.dumps(record) + "\n" for record in records),
+                encoding="utf-8",
+            )
+            self.vcc.compile_pass(str(source), output_dir=tmp)
+            full = Path(tmp, "claude_tid_collision.txt").read_text(encoding="utf-8")
+            brief = Path(tmp, "claude_tid_collision.min.txt").read_text(encoding="utf-8")
+
+        def result_range(summary):
+            match = re.search(r"\([^:]+:\d+-\d+,(\d+)-(\d+)\)", summary)
+            self.assertIsNotNone(match)
+            return int(match.group(1)), int(match.group(2))
+
+        brief_lines = brief.splitlines()
+        first_summary = next(line for line in brief_lines if '* Read "first.txt"' in line)
+        second_summary = next(line for line in brief_lines if '* Read "second.txt"' in line)
+        first_range = result_range(first_summary)
+        second_range = result_range(second_summary)
+
+        self.assertNotEqual(first_range, second_range)
+        full_lines = full.splitlines()
+        first_result = "\n".join(full_lines[first_range[0] - 1:first_range[1]])
+        second_result = "\n".join(full_lines[second_range[0] - 1:second_range[1]])
+        self.assertIn("FIRST_RESULT_MARKER", first_result)
+        self.assertNotIn("SECOND_RESULT_MARKER", first_result)
+        self.assertIn("SECOND_RESULT_MARKER", second_result)
+        self.assertNotIn("FIRST_RESULT_MARKER", second_result)
 
     def test_claude_compaction_splits_into_oldest_then_newest_chunks(self):
         with tempfile.TemporaryDirectory() as tmp:

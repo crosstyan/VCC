@@ -12,7 +12,7 @@ from ..models import Harness, SessionRecord
 class HistorySource(Protocol):
     harness: Harness
 
-    def collect(self, config: HistoryConfig, include_subagents: bool = False) -> list[SessionRecord]:
+    def collect(self, config: HistoryConfig, include_delegated: bool = False) -> list[SessionRecord]:
         ...
 
     def matches_cwd(self, record: SessionRecord, cwd: str, config: HistoryConfig) -> bool:

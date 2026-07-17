@@ -17,9 +17,9 @@ from .base import ExactCwdMixin
 class ClaudeSource(ExactCwdMixin):
     harness = "claude"
 
-    def collect(self, config: HistoryConfig, include_subagents: bool = False) -> list[SessionRecord]:
+    def collect(self, config: HistoryConfig, include_delegated: bool = False) -> list[SessionRecord]:
         records: list[SessionRecord] = []
-        for path in _session_paths(config, include_subagents):
+        for path in _session_paths(config, include_delegated):
             record = record_from_path(path)
             if record:
                 records.append(record)
@@ -115,7 +115,7 @@ def _snapshot_records(path: str) -> Iterator[dict[str, object]]:
                 yield value
 
 
-def _session_paths(config: HistoryConfig, include_subagents: bool) -> list[str]:
+def _session_paths(config: HistoryConfig, include_delegated: bool) -> list[str]:
     projects_dir = config.claude_config_dir / "projects"
     if not projects_dir.is_dir():
         return []
@@ -128,7 +128,7 @@ def _session_paths(config: HistoryConfig, include_subagents: bool) -> list[str]:
                     continue
                 project_dir = Path(project_entry.path)
                 candidates.extend(_main_transcripts(project_dir))
-                if include_subagents:
+                if include_delegated:
                     candidates.extend(_subagent_transcripts(project_dir))
     except OSError:
         return []

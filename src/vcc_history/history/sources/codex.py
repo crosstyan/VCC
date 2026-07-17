@@ -13,7 +13,7 @@ from .base import ExactCwdMixin
 class CodexSource(ExactCwdMixin):
     harness = "codex"
 
-    def collect(self, config: HistoryConfig, include_subagents: bool = False) -> list[SessionRecord]:
+    def collect(self, config: HistoryConfig, include_delegated: bool = False) -> list[SessionRecord]:
         sessions_dir = config.codex_home / "sessions"
         if not sessions_dir.is_dir():
             return []

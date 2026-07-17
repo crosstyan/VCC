@@ -14,9 +14,9 @@ from .base import canonical_path
 class ReasonixSource:
     harness = "reasonix"
 
-    def collect(self, config: HistoryConfig, include_subagents: bool = False) -> list[SessionRecord]:
+    def collect(self, config: HistoryConfig, include_delegated: bool = False) -> list[SessionRecord]:
         records: list[SessionRecord] = []
-        for path in _session_paths(config):
+        for path in _session_paths(config, include_delegated):
             record = _record_from_path(path, config)
             if record:
                 records.append(record)
@@ -130,14 +130,19 @@ def _record_from_path(path: str, config: HistoryConfig) -> SessionRecord | None:
     }
 
 
-def _session_paths(config: HistoryConfig) -> list[str]:
+def _session_paths(config: HistoryConfig, include_delegated: bool) -> list[str]:
     home = config.reasonix_home
     patterns = [
         home / "sessions" / "*.jsonl",
-        home / "sessions" / "subagents" / "*.jsonl",
         home / "projects" / "*" / "sessions" / "*.jsonl",
-        home / "projects" / "*" / "sessions" / "subagents" / "*.jsonl",
     ]
+    if include_delegated:
+        patterns.extend(
+            [
+                home / "sessions" / "subagents" / "*.jsonl",
+                home / "projects" / "*" / "sessions" / "subagents" / "*.jsonl",
+            ]
+        )
     paths: list[str] = []
     seen: set[str] = set()
     for pattern in patterns:

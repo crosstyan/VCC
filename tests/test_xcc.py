@@ -204,10 +204,9 @@ class XccTests(unittest.TestCase):
         self.assertEqual(reasonix["title"], "Reasonix fixture")
         self.assertEqual(reasonix["provider"], "deepseek-flash")
         self.assertEqual(reasonix["model"], "deepseek-v4-flash")
-        subagent = next(record for record in records if record.get("session_id") == "sa_reasonix_visible")
-        self.assertEqual(subagent["source"], "subagent")
-        self.assertEqual(subagent["cwd"], "/tmp/reasonix-project")
-        self.assertNotIn(str(self.reasonix_cleanup_session), {record["path"] for record in records})
+        paths = {record["path"] for record in records}
+        self.assertNotIn(str(self.reasonix_subagent_session), paths)
+        self.assertNotIn(str(self.reasonix_cleanup_session), paths)
 
     def test_claude_missing_store_is_skipped(self):
         original = os.environ["CLAUDE_CONFIG_DIR"]
@@ -269,9 +268,9 @@ class XccTests(unittest.TestCase):
         self.assertEqual(record["title"], "User chosen title")
         self.assertEqual(record["model"], "claude-opus-4-8")
 
-    def test_claude_subagents_are_optional_and_only_agent_jsonl_is_nested(self):
+    def test_claude_delegated_sessions_are_optional_and_only_agent_jsonl_is_nested(self):
         main_records = service.collect_sessions("claude")
-        all_records = service.collect_sessions("claude", include_subagents=True)
+        all_records = service.collect_sessions("claude", include_delegated=True)
 
         self.assertEqual([record["path"] for record in main_records], [str(self.claude_session)])
         self.assertEqual(
@@ -284,6 +283,22 @@ class XccTests(unittest.TestCase):
             str(self.claude_project / "other" / "nested.jsonl"),
             {record["path"] for record in all_records},
         )
+
+    def test_reasonix_delegated_sessions_are_optional(self):
+        main_records = service.collect_sessions("reasonix")
+        all_records = service.collect_sessions("reasonix", include_delegated=True)
+
+        self.assertEqual(
+            {record["path"] for record in main_records},
+            {str(self.reasonix_session)},
+        )
+        self.assertEqual(
+            {record["path"] for record in all_records},
+            {str(self.reasonix_session), str(self.reasonix_subagent_session)},
+        )
+        delegated = next(record for record in all_records if record["source"] == "subagent")
+        self.assertEqual(delegated["session_id"], "sa_reasonix_visible")
+        self.assertEqual(delegated["cwd"], "/tmp/reasonix-project")
 
     def test_claude_symlink_alias_is_deduplicated_in_favor_of_real_path(self):
         alias = self.claude_project / "claude_alias.jsonl"
@@ -299,7 +314,7 @@ class XccTests(unittest.TestCase):
         alias.parent.mkdir(parents=True)
         os.link(self.claude_session, alias)
 
-        records = service.collect_sessions("claude", include_subagents=True)
+        records = service.collect_sessions("claude", include_delegated=True)
 
         main = next(record for record in records if record["session_id"] == "claude-session-basic")
         self.assertEqual(main["path"], str(self.claude_session))
@@ -323,9 +338,10 @@ class XccTests(unittest.TestCase):
         help_result = CliRunner().invoke(main, ["list", "--help"])
         self.assertEqual(help_result.exit_code, 0, help_result.output)
         self.assertIn("all|claude|omp|codex|t3code|reasonix", help_result.output)
-        self.assertIn("--include-subagents", help_result.output)
-        self.assertIn("Include nested Claude Code subagent", help_result.output)
+        self.assertIn("--include-delegated", help_result.output)
+        self.assertIn("Include delegated (subagent)", help_result.output)
         self.assertIn("transcripts.", help_result.output)
+        self.assertNotIn("--include-subagents", help_result.output)
 
         list_result = CliRunner().invoke(main, ["list", "--harness", "all", "--limit", "10"])
         self.assertEqual(list_result.exit_code, 0, list_result.output)
@@ -333,14 +349,57 @@ class XccTests(unittest.TestCase):
         self.assertIn("codex\t", list_result.output)
         self.assertIn("omp\t", list_result.output)
         self.assertIn("reasonix\t", list_result.output)
-        self.assertNotIn("claude (subagent)", list_result.output)
+        self.assertNotIn("(delegated)", list_result.output)
 
-        subagent_result = CliRunner().invoke(
+        delegated_result = CliRunner().invoke(
             main,
-            ["list", "--harness", "claude", "--limit", "10", "--include-subagents"],
+            ["list", "--harness", "claude", "--limit", "10", "--include-delegated"],
         )
-        self.assertEqual(subagent_result.exit_code, 0, subagent_result.output)
-        self.assertIn("claude (subagent)\t", subagent_result.output)
+        self.assertEqual(delegated_result.exit_code, 0, delegated_result.output)
+        self.assertIn("claude (delegated)\t", delegated_result.output)
+
+        reasonix_result = CliRunner().invoke(
+            main,
+            ["list", "--harness", "reasonix", "--limit", "10", "--include-delegated"],
+        )
+        self.assertEqual(reasonix_result.exit_code, 0, reasonix_result.output)
+        self.assertIn("reasonix (delegated)\t", reasonix_result.output)
+
+    def test_search_session_limit_can_expand_beyond_default_breadth(self):
+        records = [
+            {
+                "harness": "claude",
+                "path": f"/tmp/session-{index}.jsonl",
+                "timestamp": f"2026-07-17T00:00:{index:02d}Z",
+            }
+            for index in range(21)
+        ]
+        with (
+            mock.patch("vcc_history.cli.collect_sessions", return_value=records),
+            mock.patch("vcc_history.cli.search_sessions", return_value=[]) as search_mock,
+        ):
+            default_result = CliRunner().invoke(main, ["search", "marker"])
+            self.assertEqual(default_result.exit_code, 0, default_result.output)
+            default_records = search_mock.call_args.args[0]
+            self.assertEqual(len(default_records), 20)
+            self.assertNotIn(records[0], default_records)
+
+            unlimited_result = CliRunner().invoke(
+                main, ["search", "marker", "--session-limit", "0"]
+            )
+            self.assertEqual(unlimited_result.exit_code, 0, unlimited_result.output)
+            self.assertEqual(search_mock.call_args.args[0], records)
+
+        search_help = CliRunner().invoke(main, ["search", "--help"])
+        self.assertEqual(search_help.exit_code, 0, search_help.output)
+        self.assertIn("--session-limit", search_help.output)
+        self.assertIn("Newest sessions to scan (0 = all).", search_help.output)
+        self.assertNotIn("--limit", search_help.output)
+
+        list_help = CliRunner().invoke(main, ["list", "--help"])
+        self.assertEqual(list_help.exit_code, 0, list_help.output)
+        self.assertIn("--limit", list_help.output)
+        self.assertIn("Newest sessions to list (0 = all).", list_help.output)
 
     def test_claude_search_uses_cache_and_returns_readable_refs(self):
         result = CliRunner().invoke(
@@ -466,7 +525,15 @@ class XccTests(unittest.TestCase):
     def test_reasonix_cwd_filter_and_search_refs_are_readable(self):
         result = CliRunner().invoke(
             main,
-            ["list", "--harness", "reasonix", "--cwd", "/tmp/reasonix-project", "--json"],
+            [
+                "list",
+                "--harness",
+                "reasonix",
+                "--cwd",
+                "/tmp/reasonix-project",
+                "--include-delegated",
+                "--json",
+            ],
         )
 
         self.assertEqual(result.exit_code, 0, result.output)
@@ -674,9 +741,83 @@ class XccTests(unittest.TestCase):
                     "codex",
                 ),
             )
+            conn.execute(
+                """
+                INSERT INTO projection_threads (
+                  thread_id, project_id, title, created_at, updated_at, deleted_at, model_selection_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "thread-2",
+                    "project-1",
+                    "Second T3 fixture",
+                    "2026-06-23T01:01:00Z",
+                    "2026-06-23T01:01:02Z",
+                    None,
+                    json.dumps({"provider": "codex", "model": "gpt-5.5"}),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO projection_thread_messages (
+                  message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at, attachments_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "msg-2",
+                    "thread-2",
+                    "turn-2",
+                    "user",
+                    "second T3 Code thread",
+                    0,
+                    "2026-06-23T01:01:01Z",
+                    "2026-06-23T01:01:01Z",
+                    None,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO projection_thread_sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "thread-2",
+                    "ready",
+                    "codex",
+                    None,
+                    None,
+                    None,
+                    None,
+                    "2026-06-23T01:01:02Z",
+                    "full-access",
+                    "codex",
+                ),
+            )
+
+        guarded = CliRunner().invoke(main, ["compile", str(db_path)])
+        self.assertNotEqual(guarded.exit_code, 0)
+        self.assertIn("state.sqlite contains many threads", guarded.output)
+        self.assertIn("xcc list --harness t3code", guarded.output)
+        self.assertIn("t3code:<db>#<thread>", guarded.output)
+        self.assertIn("--all-threads", guarded.output)
+
+        missing_output = CliRunner().invoke(main, ["compile", str(db_path), "--all-threads"])
+        self.assertNotEqual(missing_output.exit_code, 0)
+        self.assertIn("--all-threads requires -o/--output-dir", missing_output.output)
+
+        bulk_output = self.root / "t3-bulk"
+        compiled = CliRunner().invoke(
+            main,
+            ["compile", str(db_path), "--all-threads", "-o", str(bulk_output)],
+        )
+        self.assertEqual(compiled.exit_code, 0, compiled.output)
+        self.assertEqual(len(list(bulk_output.glob("*.min.txt"))), 2)
+        full_outputs = [
+            path for path in bulk_output.glob("*.txt") if not path.name.endswith(".min.txt")
+        ]
+        self.assertEqual(len(full_outputs), 2)
 
         records = service.collect_sessions("t3code")
-        self.assertEqual(len(records), 1)
+        self.assertEqual(len(records), 2)
         self.assertEqual(records[0]["harness"], "t3code")
         self.assertEqual(records[0]["cwd"], "/tmp/t3-project")
 
@@ -689,7 +830,7 @@ class XccTests(unittest.TestCase):
 
         t3_cache = self.root / "cache" / "t3code"
         exported = list(t3_cache.rglob("*.jsonl"))
-        self.assertEqual(len(exported), 1)
+        self.assertEqual(len(exported), 2)
         if os.name != "nt":
             self.assertEqual(stat.S_IMODE(exported[0].parent.stat().st_mode), 0o700)
 

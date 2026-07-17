@@ -24,7 +24,7 @@ _LOG_LINE_RE = re.compile(r"^\[[^\]]+\]\s+(?:NTIVE|CANON):\s+(.+)$")
 class T3CodeSource(ExactCwdMixin):
     harness = "t3code"
 
-    def collect(self, config: HistoryConfig, include_subagents: bool = False) -> list[SessionRecord]:
+    def collect(self, config: HistoryConfig, include_delegated: bool = False) -> list[SessionRecord]:
         records: list[SessionRecord] = []
         for db_path in db_paths(config):
             records.extend(records_from_db(db_path, config))

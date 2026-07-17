@@ -7,7 +7,13 @@ description: "Recover context from previous Claude Code, Codex, OMP, T3 Code, or
 
 Use the installed `xcc` command.
 
-1. List recent current-project main sessions:
+1. Check the continuation message for an explicit transcript source. If it contains a path ending in `.jsonl` or a `t3code:...#thread` ref, compile that exact source immediately and skip session discovery:
+
+   ```bash
+   xcc compile "<explicit-jsonl-path-or-t3-ref>"
+   ```
+
+2. Otherwise, list recent current-project main sessions:
 
    ```bash
    xcc list --harness all --cwd "$PWD" --limit 10
@@ -15,23 +21,23 @@ Use the installed `xcc` command.
 
    Choose the newest relevant prior session; do not blindly select the active conversation.
 
-2. If the missing context may have lived in a delegated Claude Code task, retry with:
+3. If the missing context may have lived in a delegated task, retry with:
 
    ```bash
-   xcc list --harness all --cwd "$PWD" --limit 10 --include-subagents
+   xcc list --harness all --cwd "$PWD" --limit 10 --include-delegated
    ```
 
-3. If no current-project record is useful, repeat without `--cwd`, keeping main sessions first and adding `--include-subagents` only as a retry.
-4. Compile the selected path or T3 thread ref exactly as listed:
+4. If no current-project record is useful, repeat without `--cwd`, keeping main sessions first and adding `--include-delegated` only as a retry.
+5. Compile the selected path or T3 thread ref exactly as listed:
 
    ```bash
    xcc compile "<session-path-or-t3-ref>"
    ```
 
-5. Read the highest-numbered `.min.txt` chunk first, then follow precise ranges with:
+6. Read the highest-numbered `.min.txt` chunk first, then follow precise ranges with:
 
    ```bash
    xcc read "/path/to/session.txt:START-END"
    ```
 
-6. Summarize the recovered goal, decisions, completed work, open work, and blockers. Verify referenced files and repository state directly before relying on historical claims.
+7. Summarize the recovered goal, decisions, completed work, open work, and blockers. The continuation summary is lossy; only the transcript is authoritative. Verify referenced files and repository state directly before relying on historical claims.

@@ -470,8 +470,8 @@ def parse(chain, outdir, data_prefix, data_ctr):
         if sec > 0:
             ir.append(_node("meta", ["", SEP]))
 
-    def _emit_header(h):
-        ir.append(_node("meta_header", [h, ""], _sec=sec))
+    def _emit_header(h, **kw):
+        ir.append(_node("meta_header", [h, ""], _sec=sec, **kw))
 
     def _emit_blocks(blocks, text_type):
         nonlocal blk
@@ -509,7 +509,7 @@ def parse(chain, outdir, data_prefix, data_ctr):
                 hl = f">>>tool_call {name}:{_short_tid(tid)}"
                 summary = _tool_summary(name, inp)
                 ir.append(_node("meta", [hl], _sec=sec, _blk=blk,
-                                 _tool_summary=summary))
+                                 _tool_summary=summary, _tid=tid))
                 if inp:
                     ir.append(_node("tool_call", _emit_dict(inp).split("\n"),
                                      searchable=True, _sec=sec, _blk=blk))
@@ -589,7 +589,7 @@ def parse(chain, outdir, data_prefix, data_ctr):
                     nm = tid_name.get(tuid, "unknown")
                     role = "tool_error" if is_err else "tool"
                     btype = "tool_error" if is_err else "tool_result"
-                    _emit_sep(); _emit_header(f"[{role}] {nm}:{_short_tid(tuid)}")
+                    _emit_sep(); _emit_header(f"[{role}] {nm}:{_short_tid(tuid)}", _tid=tuid)
                     tc = tr.get("content", "")
                     parts = []
                     if isinstance(tc, str):
@@ -804,8 +804,8 @@ def parse_codex(chain, outdir, data_prefix, data_ctr):
         if sec > 0:
             ir.append(_node("meta", ["", SEP]))
 
-    def _emit_header(h):
-        ir.append(_node("meta_header", [h, ""], _sec=sec))
+    def _emit_header(h, **kw):
+        ir.append(_node("meta_header", [h, ""], _sec=sec, **kw))
 
     for r in chain:
         rt = r.get("type")
@@ -861,6 +861,7 @@ def parse_codex(chain, outdir, data_prefix, data_ctr):
                         _sec=sec,
                         _blk=blk,
                         _tool_summary=summary,
+                        _tid=call_id,
                     )
                 )
                 lines = _structured_lines(tool_input)
@@ -880,7 +881,7 @@ def parse_codex(chain, outdir, data_prefix, data_ctr):
                 if not lines:
                     continue
                 _emit_sep()
-                _emit_header(f"[tool] {name}:{_short_tid(call_id)}")
+                _emit_header(f"[tool] {name}:{_short_tid(call_id)}", _tid=call_id)
                 ir.append(
                     _node("tool_result", lines, searchable=True, _sec=sec, _blk=blk)
                 )
@@ -904,7 +905,7 @@ def parse_codex(chain, outdir, data_prefix, data_ctr):
                 if not lines:
                     continue
                 _emit_sep()
-                _emit_header(f"[tool] web_search:{_short_tid(call_id)}")
+                _emit_header(f"[tool] web_search:{_short_tid(call_id)}", _tid=call_id)
                 ir.append(
                     _node("tool_result", lines, searchable=True, _sec=sec, _blk=blk)
                 )
@@ -1037,15 +1038,17 @@ def parse_omp(
         if sec > 0:
             ir.append(_node("meta", ["", SEP]))
 
-    def _emit_header(h: str) -> None:
-        ir.append(_node("meta_header", [h, ""], _sec=sec))
+    def _emit_header(h: str, **kw) -> None:
+        ir.append(_node("meta_header", [h, ""], _sec=sec, **kw))
 
-    def _emit_text_section(label: str, node_type: str, lines: list[str], searchable: bool = True) -> None:
+    def _emit_text_section(
+        label: str, node_type: str, lines: list[str], searchable: bool = True, **kw
+    ) -> None:
         nonlocal sec, blk
         if not lines:
             return
         _emit_sep()
-        _emit_header(label)
+        _emit_header(label, **kw)
         ir.append(_node(node_type, lines, searchable=searchable, _sec=sec, _blk=blk))
         blk += 1
         sec += 1
@@ -1169,6 +1172,7 @@ def parse_omp(
                             _sec=sec,
                             _blk=blk,
                             _tool_summary=summary,
+                            _tid=call_id,
                         )
                     )
                     lines = _structured_lines(args)
@@ -1194,7 +1198,12 @@ def parse_omp(
             name = message.get("toolName", "unknown")
             call_id = message.get("toolCallId", "")
             label = "[tool_error]" if message.get("isError") else "[tool]"
-            _emit_text_section(f"{label} {name}:{_short_tid(call_id)}", "tool_result", _omp_tool_result_lines(message))
+            _emit_text_section(
+                f"{label} {name}:{_short_tid(call_id)}",
+                "tool_result",
+                _omp_tool_result_lines(message),
+                _tid=call_id,
+            )
             continue
 
         if role in {"custom", "hookMessage"}:
@@ -1326,15 +1335,17 @@ def parse_reasonix(
         if sec > 0:
             ir.append(_node("meta", ["", SEP]))
 
-    def _emit_header(h: str) -> None:
-        ir.append(_node("meta_header", [h, ""], _sec=sec))
+    def _emit_header(h: str, **kw) -> None:
+        ir.append(_node("meta_header", [h, ""], _sec=sec, **kw))
 
-    def _emit_text_section(label: str, node_type: str, lines: list[str], searchable: bool = True) -> None:
+    def _emit_text_section(
+        label: str, node_type: str, lines: list[str], searchable: bool = True, **kw
+    ) -> None:
         nonlocal sec, blk
         if not lines:
             return
         _emit_sep()
-        _emit_header(label)
+        _emit_header(label, **kw)
         ir.append(_node(node_type, lines, searchable=searchable, _sec=sec, _blk=blk))
         blk += 1
         sec += 1
@@ -1396,6 +1407,7 @@ def parse_reasonix(
                             _sec=sec,
                             _blk=blk,
                             _tool_summary=summary,
+                            _tid=call_id,
                         )
                     )
                     arg_lines = _reasonix_tool_lines(arguments)
@@ -1419,7 +1431,12 @@ def parse_reasonix(
             is_error = _reasonix_is_tool_error(content)
             label = "[tool_error]" if is_error else "[tool]"
             node_type = "tool_error" if is_error else "tool_result"
-            _emit_text_section(f"{label} {name}:{_short_tid(call_id)}", node_type, _reasonix_text_lines(content))
+            _emit_text_section(
+                f"{label} {name}:{_short_tid(call_id)}",
+                node_type,
+                _reasonix_text_lines(content),
+                _tid=call_id,
+            )
             continue
 
     ir.append(_node("meta", [""]))
@@ -1631,19 +1648,22 @@ def _section_hidden_exact(ir, sec):
 # ── lowering: brief ──
 
 def _tid_result_ranges(ir):
-    """Map short_tid → (start_line, end_line) for tool_result sections."""
-    # Find which sec corresponds to which short_tid
+    """Map full tool ID → (start_line, end_line) for tool_result sections."""
+    # Find which sec corresponds to which tool ID
     tid_sec = {}
     for o in ir:
         if o["type"] == "meta_header":
             c = o["content"]
             if c and len(c) >= 1:
                 h = c[0]
-                # [tool] name:AABBCC or [tool_error] name:AABBCC
                 if h.startswith("[tool]") or h.startswith("[tool_error]"):
-                    parts = h.split(":")
-                    if len(parts) >= 2:
-                        tid_sec[parts[-1]] = o.get("_sec")
+                    if "_tid" in o:
+                        tid_sec[o["_tid"]] = o.get("_sec")
+                    else:
+                        # Defensive fallback for IR built without structural IDs.
+                        parts = h.split(":")
+                        if len(parts) >= 2:
+                            tid_sec[parts[-1]] = o.get("_sec")
     # Collect line ranges per sec
     sec_range = {}
     for o in ir:
@@ -1782,10 +1802,13 @@ def lower_brief(ir, truncate, filename="", truncate_user=256):
                         if je is not None:
                             e = je
                 if s is not None and e is not None:
-                    # Extract short_tid and look up tool_result range
-                    parts = c0.split()[1].split(":") if len(c0.split()) > 1 else []
-                    stid = parts[-1] if len(parts) >= 2 else ""
-                    rr = tid_ranges.get(stid)
+                    if "_tid" in o:
+                        tid = o["_tid"]
+                    else:
+                        # Defensive fallback for IR built without structural IDs.
+                        parts = c0.split()[1].split(":") if len(c0.split()) > 1 else []
+                        tid = parts[-1] if len(parts) >= 2 else ""
+                    rr = tid_ranges.get(tid)
                     if rr:
                         summary = f"{summary} ({short}:{s+1}-{e+1},{rr[0]+1}-{rr[1]+1})"
                     else:

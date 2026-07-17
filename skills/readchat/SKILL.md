@@ -1,14 +1,19 @@
 ---
 name: readchat
-description: "Compile and read a specific Claude Code, Codex, OMP, T3 Code, or Reasonix session. Use when the user mentions a session file, T3 thread ref or state.sqlite, or asks to review a past chat."
+description: "Compile and read a specific Claude Code, Codex, OMP, T3 Code, or Reasonix session. Use when the user mentions a session file or T3 thread ref, or asks to review a past chat."
 ---
 
 # Read a Specific Conversation
 
 Use the installed `xcc` command.
 
-1. Use the session path or T3 thread ref supplied by the user or printed by `xcc list`.
-2. Compile it explicitly:
+1. Use the session path or T3 thread ref supplied by the user or printed by `xcc list`. A T3 `state.sqlite` contains many conversations; select a specific `t3code:...#thread` ref first:
+
+   ```bash
+   xcc list --harness t3code
+   ```
+
+2. Compile the specific session explicitly:
 
    ```bash
    xcc compile "<session-path-or-t3-ref>"

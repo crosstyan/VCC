@@ -97,10 +97,10 @@ xcc list --harness t3code --limit 5
 xcc list --harness reasonix --limit 5
 ```
 
-Claude Code main-session transcripts are listed by default. If you also want to verify nested subagent discovery, run:
+Main-session transcripts are listed by default. If you also want to verify nested delegated (subagent) discovery, run:
 
 ```bash
-xcc list --harness claude --limit 5 --include-subagents
+xcc list --harness claude --limit 5 --include-delegated
 ```
 
 Then ask Claude Code, Codex, OMP, or Reasonix to use `recall` or `searchchat`.

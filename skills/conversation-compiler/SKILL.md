@@ -9,10 +9,10 @@ Use the installed `xcc` command to search or compile conversation history.
 
 ## Sources
 
-- Claude Code: `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/*.jsonl`; nested `subagents/agent-*.jsonl` files are opt-in with `--include-subagents`.
+- Claude Code: `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/*.jsonl`; nested `subagents/agent-*.jsonl` files are opt-in with `--include-delegated`.
 - Codex: `${CODEX_HOME:-$HOME/.codex}/sessions/**/*.jsonl`, not prompt-only `history.jsonl`.
 - OMP: `${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/sessions/**/*.jsonl`.
-- T3 Code: `${T3CODE_HOME:-$HOME/.t3}/{userdata,dev}/state.sqlite`; Codex-backed threads resolve to their rollout when available, otherwise VCC exports the SQLite projection to its cache.
+- T3 Code: `${T3CODE_HOME:-$HOME/.t3}/{userdata,dev}/state.sqlite`; use `xcc list --harness t3code` to select a `t3code:...#thread` ref. Codex-backed threads resolve to their rollout when available, otherwise VCC exports the SQLite projection to its cache.
 - Reasonix: `${REASONIX_HOME:-$HOME/.reasonix}/sessions/**/*.jsonl` and `${REASONIX_HOME:-$HOME/.reasonix}/projects/*/sessions/**/*.jsonl`.
 
 Missing stores are skipped for `--harness all`.
@@ -42,10 +42,10 @@ Leave explicit compile output in place unless the user asks to remove it. Do not
 2. If useful Claude Code context may be in a delegated task, retry with subagents:
 
    ```bash
-   xcc search "pattern" --harness all --cwd "$PWD" --include-subagents
+   xcc search "pattern" --harness all --cwd "$PWD" --include-delegated
    ```
 
-3. If the project filter is too narrow, repeat without `--cwd`. Keep the main-session-first order; add `--include-subagents` only as a retry.
+3. If the project filter is too narrow, repeat without `--cwd`. Keep the main-session-first order; add `--include-delegated` only as a retry.
 
 4. Read a returned ref such as `/path/session.txt:24-31`:
 
@@ -63,13 +63,15 @@ List recent current-project main sessions:
 xcc list --harness all --cwd "$PWD" --limit 20
 ```
 
-Retry with `--include-subagents` only when nested Claude Code work is relevant.
+Retry with `--include-delegated` only when nested Claude Code work is relevant.
 
 Compile a session path or T3 thread ref exactly as printed by `xcc list`:
 
 ```bash
 xcc compile "<session-path-or-t3-ref>"
 ```
+
+Do not compile a bare T3 `state.sqlite` as a single conversation. Select a thread ref with `xcc list --harness t3code`; use `xcc compile state.sqlite --all-threads -o <directory>` only for an intentional bulk export.
 
 Read the highest-numbered `.min.txt` chunk first, then follow its refs with `xcc read`. Claude Code, Codex, and OMP compaction boundaries create numbered chunks; higher suffixes are newer.
 

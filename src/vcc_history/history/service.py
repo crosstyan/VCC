@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import compiler
 from .config import HistoryConfig
+from .errors import HistoryError
 from .models import HarnessFilter, SearchHit, SessionRecord
 from .refs import absolute_ref
 from .sources import SOURCES, selected_sources
@@ -17,12 +18,12 @@ from .sources.base import canonical_path, ensure_private_cache_path
 def collect_sessions(
     harness: HarnessFilter = "all",
     config: HistoryConfig | None = None,
-    include_subagents: bool = False,
+    include_delegated: bool = False,
 ) -> list[SessionRecord]:
     resolved = config or HistoryConfig.from_env()
     records: list[SessionRecord] = []
     for source in selected_sources(harness):
-        records.extend(source.collect(resolved, include_subagents=include_subagents))
+        records.extend(source.collect(resolved, include_delegated=include_delegated))
 
     if harness == "all":
         deduped: dict[str, SessionRecord] = {}
@@ -59,6 +60,7 @@ def compile_session(
     grep_pattern: re.Pattern[str] | None = None,
     output_dir: str | None = None,
     config: HistoryConfig | None = None,
+    all_threads: bool = False,
 ) -> list[tuple[str, list[dict[str, object]]]]:
     resolved = config or HistoryConfig.from_env()
     t3_ref = t3code.parse_ref(path)
@@ -68,6 +70,11 @@ def compile_session(
 
     input_path = Path(path).expanduser()
     if input_path.is_file() and t3code.is_t3code_db(input_path):
+        if not all_threads:
+            raise HistoryError(
+                "state.sqlite contains many threads; run xcc list --harness t3code and compile "
+                "a t3code:<db>#<thread> ref, or pass --all-threads"
+            )
         results: list[tuple[str, list[dict[str, object]]]] = []
         for record in t3code.records_from_db(input_path, resolved):
             results.extend(

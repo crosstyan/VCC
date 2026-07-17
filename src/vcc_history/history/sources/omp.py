@@ -13,7 +13,7 @@ from .base import ExactCwdMixin
 class OmpSource(ExactCwdMixin):
     harness = "omp"
 
-    def collect(self, config: HistoryConfig, include_subagents: bool = False) -> list[SessionRecord]:
+    def collect(self, config: HistoryConfig, include_delegated: bool = False) -> list[SessionRecord]:
         sessions_dir = config.omp_agent_dir / "sessions"
         if not sessions_dir.is_dir():
             return []
