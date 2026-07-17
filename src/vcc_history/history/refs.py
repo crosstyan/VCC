@@ -4,13 +4,6 @@ import re
 from pathlib import Path
 
 
-def absolute_ref(compiled_path: str, block_ref: str) -> str:
-    match = re.search(r":(\d+-\d+)\)$", block_ref)
-    if not match:
-        return compiled_path
-    return f"{compiled_path}:{match.group(1)}"
-
-
 def read_ref(ref: str) -> str:
     path_text, ranges = split_ref(ref)
     text = Path(path_text).read_text(encoding="utf-8")

@@ -8,7 +8,7 @@ import sys
 import click
 
 from .history.errors import HistoryError
-from .history.models import HarnessFilter, SearchHit, SessionRecord
+from .history.models import HarnessFilter, SearchMatch, SessionRecord
 from .history.refs import read_ref
 from .history.registry import DESCRIPTORS, HARNESS_CHOICES, HARNESS_IDS
 from .history.service import collect_sessions, compile_session, filter_sessions, search_sessions
@@ -151,7 +151,7 @@ def _print_records(records: list[SessionRecord], as_json: bool) -> None:
         print(f"{rec['harness']}{kind}\t{rec.get('timestamp') or '-'}\t{rec['path']}{cwd}{title}")
 
 
-def _print_hits(hits: list[SearchHit], as_json: bool) -> None:
+def _print_hits(hits: list[SearchMatch], as_json: bool) -> None:
     if as_json:
         json.dump(hits, sys.stdout, ensure_ascii=False, indent=2)
         if hits:

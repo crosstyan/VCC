@@ -10,11 +10,10 @@ This fork targets user-level skills and session logs for Claude Code, Codex, OMP
 
 VCC compiles Claude Code transcripts, Codex rollout JSONL files, OMP session JSONL files, T3 Code persisted threads, and Reasonix session JSONL files into:
 
-- `.txt`: full transcript
-- `.min.txt`: brief UI-oriented view
-- `.view.txt`: adaptive search projection created by `xcc search`
+- `.txt`: full transcript and canonical line-number coordinate system
+- `.min.txt`: brief UI-oriented view with refs into `.txt`
 
-The key invariant from the paper stays the same: line numbers are assigned once in the full view, and every other view points back into that same coordinate system.
+`xcc search` matches structural transcript nodes directly and returns refs into the same `.txt` coordinate system. The key invariant from the paper stays the same: line numbers are assigned once in the full view, and every brief or search ref points back into that coordinate system.
 
 ## History Sources
 
@@ -111,9 +110,8 @@ VCC lowers those records into:
 
 - a full transcript
 - a UI-style brief transcript with collapsed tool-call summaries
-- an adaptive block-preserving search view
 
-Unlike flat `grep`, the adaptive view preserves role and block boundaries and gives exact pointers back into the full view.
+Search runs against the same structural nodes used to render those files. Unlike flat `grep`, it preserves block boundaries and returns exact pointers into the full view without writing a separate search projection.
 
 OMP sessions use `type: "session"` headers plus append-only entries such as `message`, `model_change`, `compaction`, `branch_summary`, and `custom_message`. T3 Code stores its UI projection in SQLite tables such as `projection_threads`, `projection_thread_messages`, and `projection_thread_activities`, with per-thread provider logs under `${T3CODE_HOME:-$HOME/.t3}/{userdata,dev}/logs/provider`. Reasonix stores provider messages directly as JSONL records with `role`, `content`, `reasoning_content`, `tool_calls`, and tool-result fields. The `xcc` CLI discovers available sources, compiles each session through the same VCC views, and emits refs that `xcc read` can resolve.
 

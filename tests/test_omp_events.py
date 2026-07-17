@@ -161,6 +161,37 @@ class OmpEventsTests(unittest.TestCase):
         self.assertIn("command: |\n  pwd\nexit_code: 0", full)
         self.assertIn("code: |\n  print(1)\ncancelled: true", full)
 
+    def test_brief_includes_structural_context_and_hides_custom_noise(self):
+        records = [
+            {
+                "type": "compaction",
+                "summary": "first compaction line\nsecond compaction line",
+            },
+            {
+                "type": "branch_summary",
+                "fromId": "entry-1",
+                "summary": "branch details stay in the full view",
+            },
+            {
+                "type": "custom_message",
+                "customType": "activity:noise",
+                "content": "hidden custom activity",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes = render(parse_events(records), tmp, "omp_brief")
+        vcc.assign_lines(nodes)
+        vcc.lower_brief(nodes, truncate=128, filename="omp_brief.txt")
+        brief = "\n".join(vcc.emit(nodes, "content_brief"))
+
+        self.assertIn("[compaction]\nfirst compaction line", brief)
+        self.assertNotIn("second compaction line", brief)
+        self.assertIn("[branch]\nfrom: entry-1", brief)
+        self.assertNotIn("branch details stay in the full view", brief)
+        self.assertNotIn("[custom] activity:noise", brief)
+        self.assertNotIn("hidden custom activity", brief)
+
     def test_attachment_extraction_is_deferred_until_render(self):
         image = b"omp image bytes"
         records = [

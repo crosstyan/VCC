@@ -1,6 +1,6 @@
 ---
 name: conversation-compiler
-description: "VCC for Claude Code, Codex, OMP, T3 Code, and Reasonix. Compile and search session history across harnesses into full, brief, and adaptive views."
+description: "VCC for Claude Code, Codex, OMP, T3 Code, and Reasonix. Compile and structurally search session history across harnesses with full and brief views."
 ---
 
 # VCC for Claude Code, Codex, OMP, T3 Code, and Reasonix
@@ -23,9 +23,8 @@ Missing stores are skipped for `--harness all`.
 |------|------------|---------|
 | `.txt` | `xcc search` or `xcc compile` | Canonical full transcript and line-number coordinate system |
 | `.min.txt` | `xcc search` or `xcc compile` | Brief scan view with tool summaries and refs into `.txt` |
-| `.view.txt` | `xcc search` | Search-focused adaptive projection |
 
-`xcc search` automatically stores disposable compiled views under `${VCC_CACHE_DIR:-$HOME/.cache/vcc-history}/compiled/` and prints matching blocks with full-view refs. `xcc compile` is an explicit export: it writes `.txt` and `.min.txt` beside the input unless `-o <directory>` is supplied.
+`xcc search` automatically stores disposable `.txt` and `.min.txt` files under `${VCC_CACHE_DIR:-$HOME/.cache/vcc-history}/compiled/`, matches structural transcript nodes, and prints full-view refs. `xcc compile` is an explicit export: it writes `.txt` and `.min.txt` beside the input unless `-o <directory>` is supplied.
 
 Leave explicit compile output in place unless the user asks to remove it. Do not use `-o` unless a separate output directory is useful or requested.
 
@@ -79,5 +78,5 @@ Read the highest-numbered `.min.txt` chunk first, then follow its refs with `xcc
 
 - Search main sessions before including Claude Code subagents.
 - Codex encrypted reasoning is unsupported and remains hidden.
-- Treat `.txt` as the canonical line-number space for every view.
+- Treat `.txt` as the canonical line-number space for brief-view and search refs.
 - For recovered historical claims about files or repository state, verify the current workspace before acting on them.

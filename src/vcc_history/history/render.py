@@ -22,6 +22,11 @@ SEP = "════════════════════════�
 _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
+_BRIEF_FULL = "full"
+_BRIEF_CONTEXT = "context"
+_BRIEF_HIDDEN = "hidden"
+_BRIEF_CONTEXT_EVENT_KINDS = {"compaction", "branch", "session_init"}
+
 _TOOL_SUMMARY_FIELDS = {
     "Read": "file_path",
     "Edit": "file_path",
@@ -230,6 +235,18 @@ def _omp_file_mention_lines(payload: Mapping[str, object]) -> list[str]:
     return lines
 
 
+def _brief_policy_for_message(role: str) -> str:
+    return _BRIEF_FULL if role in {"user", "assistant"} else _BRIEF_HIDDEN
+
+
+def _brief_policy_for_system_event(kind: str) -> str:
+    if kind in _BRIEF_CONTEXT_EVENT_KINDS:
+        return _BRIEF_CONTEXT
+    if kind == "compact_summary":
+        return _BRIEF_FULL
+    return _BRIEF_HIDDEN
+
+
 def _omp_execution_lines(
     payload: Mapping[str, object], source_key: str
 ) -> list[str]:
@@ -283,7 +300,13 @@ def render(
         if section > 0:
             nodes.append(_node("meta", ["", SEP]))
 
-    def emit_header(label: str, role: str, kind: str = "message", **fields: object) -> None:
+    def emit_header(
+        label: str,
+        role: str,
+        kind: str = "message",
+        brief_policy: str = _BRIEF_HIDDEN,
+        **fields: object,
+    ) -> None:
         nodes.append(
             _node(
                 "meta_header",
@@ -291,6 +314,7 @@ def render(
                 _sec=section,
                 _role=role,
                 _kind=kind,
+                _brief_policy=brief_policy,
                 **fields,
             )
         )
@@ -420,6 +444,7 @@ def render(
                         _blk=block_index,
                         _tool_summary=summary,
                         _tool_name=block.name,
+                        _tool_boundary="start",
                         _tid=block.call_id,
                     )
                 )
@@ -449,6 +474,7 @@ def render(
                         ["<<<tool_call"],
                         _sec=section,
                         _blk=block_index,
+                        _tool_boundary="end",
                     )
                 )
                 block_index += 1
@@ -493,7 +519,7 @@ def render(
             saved_counter = data_counter[0]
             saved_block = block_index
             emit_separator()
-            emit_header(label, role)
+            emit_header(label, role, brief_policy=_brief_policy_for_message(role))
             has_any = emit_blocks(regular_blocks, node_type)
             if empty_custom:
                 nodes.append(
@@ -574,7 +600,9 @@ def render(
                 f"[{result_role}] {name}:{_short_tid(call_id)}",
                 result_role,
                 kind="tool_result",
+                brief_policy=_BRIEF_HIDDEN,
                 _tid=call_id,
+                _tool_error=is_error,
             )
             text = _sanitize("\n\n".join(parts))
             if has_details:
@@ -602,7 +630,12 @@ def render(
             if event.kind == "compact_summary":
                 line_count = event.text.count("\n") + 1 if event.text else 0
                 emit_separator()
-                emit_header("[user]", "user", kind=event.kind)
+                emit_header(
+                    "[user]",
+                    "user",
+                    kind=event.kind,
+                    brief_policy=_brief_policy_for_system_event(event.kind),
+                )
                 nodes.append(
                     _node(
                         "user",
@@ -675,7 +708,12 @@ def render(
 
             if lines:
                 emit_separator()
-                emit_header(label, "system", kind=event.kind)
+                emit_header(
+                    label,
+                    "system",
+                    kind=event.kind,
+                    brief_policy=_brief_policy_for_system_event(event.kind),
+                )
                 nodes.append(
                     _node(
                         node_type,

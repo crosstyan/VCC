@@ -40,7 +40,10 @@ class CodexVccTests(unittest.TestCase):
         self.assertNotIn("Private fixture thinking", brief)
         self.assertNotIn("def example():", brief)
         self.assertIn('* Read "src/example.py"', brief)
-        self.assertIn('* Bash "Run sanitized fixture tests"', brief)
+        self.assertRegex(
+            brief,
+            r'\* Bash "Run sanitized fixture tests" \([^)]*\) !error',
+        )
 
     def test_claude_brief_links_tool_results_by_full_id(self):
         records = [
@@ -182,33 +185,16 @@ class CodexVccTests(unittest.TestCase):
         self.assertNotIn("old hidden summary", second)
         self.assertNotIn("first prompt", second)
 
-    def test_codex_grep_uses_matching_blocks_and_hides_reasoning(self):
+    def test_compile_writes_only_full_and_brief_views(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.vcc.compile_pass(
                 str(FIXTURES / "codex_basic.jsonl"),
                 output_dir=tmp,
-                grep_pattern=re.compile("repo"),
+                quiet=True,
             )
-            view = Path(tmp, "codex_basic.view.txt").read_text(encoding="utf-8")
+            outputs = sorted(path.name for path in Path(tmp).iterdir())
 
-        self.assertIn("[user]", view)
-        self.assertIn("(codex_basic.txt:", view)
-        self.assertIn("please inspect the repo", view)
-        self.assertNotIn("encrypted_content", view)
-
-    def test_codex_grep_redacts_embedded_base64_blobs(self):
-        payload = "iVBORw0KGgo" + ("Aa0/" * 300)
-        line = f'AQA result image="data:image/png;base64,{payload}"'
-
-        rendered = self.vcc.match_lines(
-            [line],
-            re.compile("AQA"),
-            "codex_blob.txt",
-            42,
-        )
-
-        self.assertIn("data:image/png;base64,[omitted", rendered[1])
-        self.assertNotIn(payload, rendered[1])
+        self.assertEqual(outputs, ["codex_basic.min.txt", "codex_basic.txt"])
 
     def test_omp_basic_compiles_messages_tools_and_entries(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -228,7 +214,11 @@ class CodexVccTests(unittest.TestCase):
         self.assertIn("[custom] irc:incoming", full)
         self.assertIn("[branch]", full)
         self.assertIn('* read "packages/coding-agent/src/session/session-listing.ts"', brief)
-        self.assertIn('* bash "git status --short"', brief)
+        self.assertRegex(brief, r'\* bash "git status --short" \([^)]*\) !error')
+        self.assertIn("[session_init]\nsystem_prompt: |", brief)
+        self.assertIn("[branch]\nfrom: e3", brief)
+        self.assertNotIn("[model_change]", brief)
+        self.assertNotIn("[custom] irc:incoming", brief)
 
     def test_reasonix_basic_compiles_messages_reasoning_and_tools(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -250,7 +240,7 @@ class CodexVccTests(unittest.TestCase):
         self.assertNotIn("Reasonix system prompt should stay out of the brief view.", brief)
         self.assertNotIn("private Reasonix reasoning text", brief)
         self.assertIn('* read_file "internal/history/search.go"', brief)
-        self.assertIn('* bash "go test ./internal/history"', brief)
+        self.assertRegex(brief, r'\* bash "go test ./internal/history" \([^)]*\) !error')
 
     def test_t3code_projection_compiles_messages_and_activities(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -263,8 +253,10 @@ class CodexVccTests(unittest.TestCase):
         self.assertIn("[assistant]", full)
         self.assertIn("[custom] activity:tool.completed", full)
         self.assertIn("sqlite3 state.sqlite .tables", full)
-        self.assertNotIn("[session_init]", brief)
+        self.assertIn("[session_init]\nid: t3-thread-1", brief)
         self.assertIn("I will inspect the T3 Code projection tables.", brief)
+        self.assertNotIn("[custom] activity:tool.completed", brief)
+        self.assertNotIn("sqlite3 state.sqlite .tables", brief)
 
 
 if __name__ == "__main__":

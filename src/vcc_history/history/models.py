@@ -27,6 +27,9 @@ class SearchHit(TypedDict):
     harness: Harness
     session_path: str
     compiled_path: str
+
+
+class SearchMatch(SearchHit):
     block_type: str
     ref: str
     lines: list[str]

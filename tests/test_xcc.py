@@ -21,7 +21,7 @@ if str(SRC) not in sys.path:
 from vcc_history.cli import main
 from vcc_history.history import service, vcc
 from vcc_history.history.errors import HistoryError
-from vcc_history.history.refs import read_ref
+from vcc_history.history.refs import read_ref, split_ref
 from vcc_history.history.registry import DESCRIPTORS, HARNESS_CHOICES, HARNESS_IDS
 from vcc_history.history.sources.base import file_alias_keys, finalize_record
 from vcc_history.history.sources.codex import record_from_path as codex_record_from_path
@@ -527,6 +527,48 @@ class XccTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(compiled_path.parent.stat().st_mode), 0o700)
         self.assertIn("sanitized Claude fixture marker", read_ref(hits[0]["ref"]))
         self.assertEqual(list(self.claude_project.glob("claude_basic*.txt")), [])
+        self.assertEqual(list((self.root / "cache").rglob("*.view.txt")), [])
+
+    def test_search_builds_structural_node_spans_and_redacts_display_lines(self):
+        payload = "iVBORw0KGgo" + ("Aa0/" * 300)
+        matched_text = f'AQA result image="data:image/png;base64,{payload}"'
+        compiled_path = self.root / "structural-search.txt"
+        full_lines = ["[assistant]", "", "alpha", matched_text, "omega"]
+        compiled_path.write_text("\n".join(full_lines), encoding="utf-8")
+        node = {
+            "type": "assistant",
+            "content": full_lines[2:5],
+            "searchable": True,
+            "start_line": 2,
+            "end_line": 4,
+        }
+        record = {
+            "harness": "claude",
+            "path": str(self.claude_session),
+        }
+
+        with mock.patch.object(
+            service,
+            "compile_session",
+            return_value=[(str(compiled_path), [node])],
+        ) as compile_mock:
+            hits = service.search_sessions([record], re.compile("AQA"))
+
+        self.assertEqual(len(hits), 1)
+        hit = hits[0]
+        self.assertEqual(hit["ref"], f"{compiled_path}:3-5")
+        self.assertEqual(hit["lines"][0].split(":", 1)[0], "  4")
+        self.assertIn("data:image/png;base64,[omitted", hit["lines"][0])
+        self.assertNotIn(payload, hit["lines"][0])
+        path_text, ranges = split_ref(hit["ref"])
+        self.assertEqual(path_text, str(compiled_path))
+        self.assertEqual(ranges, [(3, 5)])
+        self.assertEqual(
+            Path(path_text).read_text(encoding="utf-8").splitlines()[2:5],
+            node["content"],
+        )
+        self.assertNotIn("grep_pattern", compile_mock.call_args.kwargs)
+        self.assertTrue(compile_mock.call_args.kwargs["quiet"])
 
     def test_search_refuses_symlinked_cache_directories(self):
         cache_root = self.root / "cache"
@@ -668,6 +710,8 @@ class XccTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertTrue(self.claude_session.with_suffix(".txt").is_file())
         self.assertTrue(self.claude_session.with_name("claude_basic.min.txt").is_file())
+        self.assertFalse(self.claude_session.with_name("claude_basic.view.txt").exists())
+        self.assertNotIn(".view.txt", result.output)
         self.assertFalse((self.root / "cache" / "compiled").exists())
 
     def test_claude_search_returns_newest_compaction_chunk_first(self):

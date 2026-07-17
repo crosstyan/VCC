@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,8 +8,7 @@ from pathlib import Path
 from . import compiler, vcc
 from .config import HistoryConfig
 from .errors import HistoryError
-from .models import HarnessFilter, SearchHit, SessionRecord
-from .refs import absolute_ref
+from .models import HarnessFilter, SearchMatch, SessionRecord
 from .registry import SOURCES, selected_sources
 from .sources import t3code
 from .sources.base import canonical_path, ensure_private_cache_path, parse_instant
@@ -89,11 +87,11 @@ def filter_sessions(
 
 def compile_session(
     path: str,
-    grep_pattern: re.Pattern[str] | None = None,
     output_dir: str | None = None,
     config: HistoryConfig | None = None,
     all_threads: bool = False,
     harness: str | None = None,
+    quiet: bool = False,
 ) -> list[tuple[str, list[dict[str, object]]]]:
     resolved = config or HistoryConfig.from_env()
     t3_ref = t3code.parse_ref(path)
@@ -118,10 +116,10 @@ def compile_session(
             results.extend(
                 compile_session(
                     record["path"],
-                    grep_pattern=grep_pattern,
                     output_dir=output_dir,
                     config=resolved,
                     harness=record["harness"],
+                    quiet=quiet,
                 )
             )
         return results
@@ -129,8 +127,7 @@ def compile_session(
     return compiler.compile_pass(
         path,
         output_dir=output_dir,
-        grep_pattern=grep_pattern,
-        quiet=grep_pattern is not None,
+        quiet=quiet,
         harness=harness,
     )
 
@@ -139,16 +136,16 @@ def search_sessions(
     records: list[SessionRecord],
     pattern: re.Pattern[str],
     config: HistoryConfig | None = None,
-) -> list[SearchHit]:
+) -> list[SearchMatch]:
     resolved = config or HistoryConfig.from_env()
-    hits: list[SearchHit] = []
+    hits: list[SearchMatch] = []
     for record in reversed(records):
         compiled = compile_session(
             record["path"],
-            grep_pattern=pattern,
             output_dir=str(_search_cache_dir(record, resolved)),
             config=resolved,
             harness=record["harness"],
+            quiet=True,
         )
         for compiled_path, ir in reversed(compiled):
             for node in reversed(ir):
@@ -157,14 +154,18 @@ def search_sessions(
                 content = node.get("content")
                 if not isinstance(content, list):
                     continue
-                lines = [str(item) for item in content]
-                rendered = vcc.match_lines(
-                    lines,
-                    pattern,
-                    os.path.basename(compiled_path),
-                    int(node.get("start_line", 0)) + 1,
-                )
-                if len(rendered) <= 1:
+                node_start = node.get("start_line")
+                node_end = node.get("end_line")
+                if not isinstance(node_start, int) or not isinstance(node_end, int):
+                    continue
+                start_line = node_start + 1
+                end_line = node_end + 1
+                matched_lines = [
+                    vcc.format_search_line(start_line + offset, str(line))
+                    for offset, line in enumerate(content)
+                    if pattern.search(str(line))
+                ]
+                if not matched_lines:
                     continue
                 hits.append(
                     {
@@ -172,8 +173,8 @@ def search_sessions(
                         "session_path": record["path"],
                         "compiled_path": compiled_path,
                         "block_type": str(node.get("type", "unknown")),
-                        "ref": absolute_ref(compiled_path, str(rendered[0])),
-                        "lines": [str(line) for line in rendered[1:]],
+                        "ref": f"{compiled_path}:{start_line}-{end_line}",
+                        "lines": matched_lines,
                     }
                 )
     return hits

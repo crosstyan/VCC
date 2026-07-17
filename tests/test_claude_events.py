@@ -113,6 +113,53 @@ class ClaudeEventsTests(unittest.TestCase):
 
         self.assertNotIn("* TodoWrite", brief)
 
+    def test_brief_error_outcome_uses_structural_result_metadata(self):
+        conversation = Conversation(
+            harness="claude",
+            segments=(
+                Segment(
+                    reason="original",
+                    events=(
+                        Message(
+                            role="assistant",
+                            blocks=(
+                                ToolCall(
+                                    call_id="toolu_error",
+                                    name="Read",
+                                    input={"file_path": "missing.txt"},
+                                    raw_text=None,
+                                ),
+                            ),
+                            timestamp=None,
+                        ),
+                        Message(
+                            role="tool",
+                            blocks=(
+                                ToolResult(
+                                    call_id="toolu_error",
+                                    name="Read",
+                                    text="missing",
+                                    is_error=True,
+                                ),
+                            ),
+                            timestamp=None,
+                        ),
+                    ),
+                ),
+            ),
+            metadata={},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            nodes = render(conversation, tmp, "structural-error")
+        result_header = next(node for node in nodes if node.get("_tool_error"))
+        result_header["content"][0] = "[tool] Read:error"
+        vcc.assign_lines(nodes)
+        vcc.lower_brief(nodes, truncate=128, filename="structural-error.txt")
+        brief = "\n".join(vcc.emit(nodes, "content_brief"))
+
+        self.assertRegex(brief, r'\* Read "missing.txt" \([^)]*\) !error')
+
     def test_attachment_extraction_is_deferred_until_render(self):
         image = b"sanitized image bytes"
         document = b"sanitized document bytes"

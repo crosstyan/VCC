@@ -35,4 +35,4 @@ Use the installed `xcc` command. Search patterns are regular expressions.
    xcc read "/path/to/session.txt:START-END"
    ```
 
-`xcc search` automatically compiles disposable `.txt`, `.min.txt`, and `.view.txt` files beneath `${VCC_CACHE_DIR:-$HOME/.cache/vcc-history}/compiled/`. Do not run `xcc compile` merely to populate search results, and do not replace `xcc search` with raw `grep` or `rg`.
+`xcc search` automatically compiles disposable `.txt` and `.min.txt` files beneath `${VCC_CACHE_DIR:-$HOME/.cache/vcc-history}/compiled/`, matches structural transcript nodes, and returns refs into the canonical `.txt` line space. Do not run `xcc compile` merely to populate search results, and do not replace `xcc search` with raw `grep` or `rg`.

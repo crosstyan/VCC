@@ -6,7 +6,6 @@ View-oriented Conversation Compiler for supported coding-agent logs.
 Produces per conversation chain:
   .txt       Full transcript (lossless rendering of JSONL)
   .min.txt   Brief mode (tool_call summaries with line refs, no separators)
-  .view.txt  View mode (search-focused, written by xcc search)
 
 Usage:
   xcc compile conversation.jsonl
@@ -75,7 +74,7 @@ def _looks_like_base64_blob(token):
     return kinds >= 3
 
 def _redact_search_blob_line(line):
-    """Bound grep/view lines by eliding embedded base64-like payloads."""
+    """Bound search display lines by eliding embedded base64-like payloads."""
     def _data_url_repl(match):
         media_type = match.group(1)
         payload = re.sub(r"\s+", "", match.group(2))
@@ -91,26 +90,10 @@ def _redact_search_blob_line(line):
     line = _LONG_B64_RE.sub(_b64_repl, line)
     return line
 
-# ── match lines ──
+# ── search line formatting ──
 
-def match_lines(lines, regex, ref_fn="x.txt", start_line=1):
-    if not lines:
-        return []
-    end_line = start_line + len(lines) - 1
-    from_ref = f"...(from {ref_fn}:{start_line}-{end_line})"
-
-    matched = []
-    for i, line in enumerate(lines):
-        if regex.search(line):
-            matched.append((start_line + i, line))
-    if not matched:
-        return [from_ref]
-
-    block_ref = f"({ref_fn}:{start_line}-{end_line})"
-    result = [block_ref]
-    for ln, lt in matched:
-        result.append(f"  {ln}: {_redact_search_blob_line(lt)}")
-    return result
+def format_search_line(line_number, text):
+    return f"  {line_number}: {_redact_search_blob_line(text)}"
 
 
 # ── lexer ──
@@ -308,30 +291,21 @@ def _is_truncatable(o):
 def _is_thinking(o):
     return o["type"] in ("thinking", "redacted_thinking")
 
-def _sec_roles(ir):
-    """Map sec -> structural role, falling back to legacy header parsing."""
-    roles = {}
+def _sec_metadata(ir):
+    """Map section IDs to structural header metadata."""
+    sections = {}
     for o in ir:
-        if o["type"] == "meta_header":
-            s = o.get("_sec")
-            if s is None:
-                continue
-            role = o.get("_role")
-            if role:
-                roles[s] = role
-                continue
-            h = o["content"][0]
-            if h.startswith("[tool_error]"):
-                roles[s] = "tool_error"
-            elif h.startswith("[tool]"):
-                roles[s] = "tool"
-            elif h.startswith("[assistant]"):
-                roles[s] = "assistant"
-            elif h.startswith("[user]"):
-                roles[s] = "user"
-            elif h.startswith("[system]"):
-                roles[s] = "system"
-    return roles
+        if o["type"] != "meta_header":
+            continue
+        sec = o.get("_sec")
+        if sec is None:
+            continue
+        sections[sec] = {
+            "role": o.get("_role"),
+            "kind": o.get("_kind"),
+            "brief_policy": o.get("_brief_policy", "hidden"),
+        }
+    return sections
 
 
 # ── brief-mode filtering ──
@@ -389,56 +363,51 @@ def _section_hidden_exact(ir, sec):
 
 # ── lowering: brief ──
 
-def _tid_result_ranges(ir):
-    """Map full tool ID → (start_line, end_line) for tool_result sections."""
-    # Find which sec corresponds to which tool ID
-    tid_sec = {}
+def _tid_result_info(ir):
+    """Map full tool IDs to structural result ranges and error outcomes."""
+    tid_sections = {}
     for o in ir:
-        if o["type"] == "meta_header":
-            c = o["content"]
-            if c and len(c) >= 1:
-                h = c[0]
-                if h.startswith("[tool]") or h.startswith("[tool_error]"):
-                    if "_tid" in o:
-                        tid_sec[o["_tid"]] = o.get("_sec")
-                    else:
-                        # Defensive fallback for IR built without structural IDs.
-                        parts = h.split(":")
-                        if len(parts) >= 2:
-                            tid_sec[parts[-1]] = o.get("_sec")
-    # Collect line ranges per sec
-    sec_range = {}
-    for o in ir:
-        s = o.get("_sec")
-        if s is None:
+        if o["type"] != "meta_header" or o.get("_kind") != "tool_result":
             continue
-        sl = o.get("start_line")
-        el = o.get("end_line")
-        if sl is not None and el is not None:
-            if s not in sec_range:
-                sec_range[s] = [sl, el]
-            else:
-                sec_range[s][0] = min(sec_range[s][0], sl)
-                sec_range[s][1] = max(sec_range[s][1], el)
-    # Build tid → range (only content nodes, skip the separator/header)
+        tid = o.get("_tid")
+        sec = o.get("_sec")
+        if tid is not None and sec is not None:
+            tid_sections[tid] = (sec, bool(o.get("_tool_error")))
+
+    sec_ranges = {}
+    for o in ir:
+        sec = o.get("_sec")
+        if sec is None:
+            continue
+        start_line = o.get("start_line")
+        end_line = o.get("end_line")
+        if start_line is None or end_line is None:
+            continue
+        if sec not in sec_ranges:
+            sec_ranges[sec] = [start_line, end_line]
+        else:
+            sec_ranges[sec][0] = min(sec_ranges[sec][0], start_line)
+            sec_ranges[sec][1] = max(sec_ranges[sec][1], end_line)
+
     result = {}
-    for tid, sec in tid_sec.items():
-        if sec in sec_range:
-            result[tid] = tuple(sec_range[sec])
+    for tid, (sec, is_error) in tid_sections.items():
+        if sec in sec_ranges:
+            result[tid] = {
+                "range": tuple(sec_ranges[sec]),
+                "is_error": is_error,
+            }
     return result
 
 
 def lower_brief(ir, truncate, filename="", truncate_user=256):
     short = _short(filename)
-    roles = _sec_roles(ir)
-    tid_ranges = _tid_result_ranges(ir)
+    sections = _sec_metadata(ir)
+    roles = {sec: metadata["role"] for sec, metadata in sections.items()}
+    policies = {sec: metadata["brief_policy"] for sec, metadata in sections.items()}
+    tid_results = _tid_result_info(ir)
 
-    # Sections visible in truncation: conversational user/assistant content only.
     visible_secs = {
-        sec
-        for sec, role in roles.items()
-        if role not in ("tool", "tool_error", "system", "custom")
-        and not role.startswith("custom:")
+        sec for sec, policy in policies.items() if policy in {"full", "context"}
     }
 
     # Determine which assistant sections to merge:
@@ -470,6 +439,8 @@ def lower_brief(ir, truncate, filename="", truncate_user=256):
     for sec in list(visible_secs):
         if sec not in sec_has_nonthink:
             visible_secs.discard(sec)
+        elif policies.get(sec) == "context":
+            continue
         elif roles.get(sec) == "user" and _user_hidden_in_brief(ir, sec):
             visible_secs.discard(sec)
         elif _section_hidden_exact(ir, sec):
@@ -489,6 +460,7 @@ def lower_brief(ir, truncate, filename="", truncate_user=256):
                     merge_secs.add(cur_sec)
                 break
 
+    context_content_emitted = set()
     for idx, o in enumerate(ir):
         s = o.get("_sec")
 
@@ -514,6 +486,19 @@ def lower_brief(ir, truncate, filename="", truncate_user=256):
             o["content_brief"] = None
             continue
 
+        # Structural context sections retain a one-line header and one content line.
+        if s is not None and policies.get(s) == "context":
+            if o["type"] == "meta_header":
+                content = o.get("content", [])
+                o["content_brief"] = [content[0]] if content else None
+            elif s not in context_content_emitted and o["type"] != "meta":
+                content = o.get("content", [])
+                o["content_brief"] = [content[0]] if content else None
+                context_content_emitted.add(s)
+            else:
+                o["content_brief"] = None
+            continue
+
         # Merged assistant: hide separator and header
         if s in merge_secs and o["type"] == "meta_header":
             o["content_brief"] = None
@@ -530,43 +515,37 @@ def lower_brief(ir, truncate, filename="", truncate_user=256):
                 o["content_brief"] = None
                 continue
 
-        # Tool_call three-piece: collapse to single-line summary with line ref
-        if o["type"] == "meta" and o.get("content", []):
-            c0 = o["content"][0]
-            if c0.startswith(">>>tool_call"):
-                # Hide noise tools (internal bookkeeping)
-                tool_name = o.get("_tool_name")
-                if not isinstance(tool_name, str):
-                    # Defensive fallback for IR built without structural tool names.
-                    tool_name = c0.split()[1].split(":")[0] if len(c0.split()) > 1 else ""
-                if tool_name in _BRIEF_HIDE_TOOLS:
-                    o["content_brief"] = None
-                    continue
-                summary = o.get("_tool_summary", f"* unknown")
-                s = o.get("start_line")
-                e = o.get("end_line")
-                for j in (idx + 1, idx + 2):
-                    if j < len(ir) and ir[j].get("_blk") == o.get("_blk"):
-                        je = ir[j].get("end_line")
-                        if je is not None:
-                            e = je
-                if s is not None and e is not None:
-                    if "_tid" in o:
-                        tid = o["_tid"]
-                    else:
-                        # Defensive fallback for IR built without structural IDs.
-                        parts = c0.split()[1].split(":") if len(c0.split()) > 1 else []
-                        tid = parts[-1] if len(parts) >= 2 else ""
-                    rr = tid_ranges.get(tid)
-                    if rr:
-                        summary = f"{summary} ({short}:{s+1}-{e+1},{rr[0]+1}-{rr[1]+1})"
-                    else:
-                        summary = f"{summary} ({short}:{s+1}-{e+1})"
-                o["content_brief"] = [summary]
-                continue
-            if c0 == "<<<tool_call":
+        # Tool_call three-piece: collapse to single-line summary with line ref.
+        if o["type"] == "meta" and o.get("_tool_boundary") == "start":
+            tool_name = o.get("_tool_name")
+            if tool_name in _BRIEF_HIDE_TOOLS:
                 o["content_brief"] = None
                 continue
+            summary = o.get("_tool_summary", "* unknown")
+            start_line = o.get("start_line")
+            end_line = o.get("end_line")
+            for j in (idx + 1, idx + 2):
+                if j < len(ir) and ir[j].get("_blk") == o.get("_blk"):
+                    candidate_end = ir[j].get("end_line")
+                    if candidate_end is not None:
+                        end_line = candidate_end
+            result = tid_results.get(o.get("_tid"))
+            if start_line is not None and end_line is not None:
+                if result:
+                    result_start, result_end = result["range"]
+                    summary = (
+                        f"{summary} ({short}:{start_line+1}-{end_line+1},"
+                        f"{result_start+1}-{result_end+1})"
+                    )
+                else:
+                    summary = f"{summary} ({short}:{start_line+1}-{end_line+1})"
+            if result and result["is_error"]:
+                summary = f"{summary} !error"
+            o["content_brief"] = [summary]
+            continue
+        if o["type"] == "meta" and o.get("_tool_boundary") == "end":
+            o["content_brief"] = None
+            continue
 
         if o["type"] == "tool_call":
             o["content_brief"] = None
@@ -603,102 +582,6 @@ def lower_brief(ir, truncate, filename="", truncate_user=256):
 
         # Non-truncatable (images, documents, etc) → copy
         o["content_brief"] = list(o["content"])
-
-
-# ── lowering: view ──
-
-def lower_view(ir, filename="", grep_pattern=None):
-    if not grep_pattern:
-        # No grep: view is same as truncated (shouldn't normally be called)
-        for o in ir:
-            o["content_view"] = o.get("content_brief")
-        return
-
-    short = _short(filename)
-
-    # Per-node match check
-    def _node_matches(o):
-        if not o["searchable"]:
-            return False
-        for line in o["content"]:
-            if grep_pattern.search(line):
-                return True
-        return False
-
-    # Pass 1: determine visibility for each searchable block
-    block_visible = {}  # blk -> bool
-    for o in ir:
-        blk = o.get("_blk")
-        if blk is None or blk in block_visible:
-            continue
-        if o["searchable"] and _node_matches(o):
-            block_visible[blk] = True
-
-    # Derive which sections have any visible block (for header/separator logic)
-    sec_has_visible = set()
-    for o in ir:
-        blk = o.get("_blk")
-        if blk is not None and block_visible.get(blk):
-            s = o.get("_sec")
-            if s is not None:
-                sec_has_visible.add(s)
-
-    # Pass 2: set content_view for each node
-    for idx, o in enumerate(ir):
-        s = o.get("_sec")
-        blk = o.get("_blk")
-
-        # Separator: show only between two sections that have visible blocks
-        if s is None and o["type"] == "meta" and SEP in o.get("content", []):
-            next_vis = False
-            for j in range(idx + 1, len(ir)):
-                ns = ir[j].get("_sec")
-                if ns is not None:
-                    next_vis = ns in sec_has_visible
-                    break
-            prev_vis = False
-            seen = set()
-            for j in range(idx - 1, -1, -1):
-                ps = ir[j].get("_sec")
-                if ps is not None and ps not in seen:
-                    seen.add(ps)
-                    if ps in sec_has_visible:
-                        prev_vis = True
-                        break
-            o["content_view"] = list(o["content"]) if (next_vis and prev_vis) else None
-            continue
-
-        # meta_header: show if section has any visible block
-        if o["type"] == "meta_header":
-            o["content_view"] = list(o["content"]) if s in sec_has_visible else None
-            continue
-
-        # Thinking / tool_call metas: show if same blk matched
-        if o["type"] == "meta" and o.get("content", []):
-            c0 = o["content"][0]
-            if c0.startswith(">>>thinking") or c0.startswith("<<<thinking") or \
-               c0.startswith(">>>redacted_thinking") or c0.startswith("<<<redacted_thinking") or \
-               c0.startswith(">>>tool_call ") or c0 == "<<<tool_call":
-                o["content_view"] = list(o["content"]) if block_visible.get(blk) else None
-                continue
-
-        # Other meta → show if section has visible blocks
-        if o["type"] == "meta":
-            o["content_view"] = list(o["content"]) if s in sec_has_visible else None
-            continue
-
-        # Searchable content blocks: show only if this block matches
-        if o["searchable"]:
-            if _node_matches(o):
-                node_start = o.get("start_line", 0) + 1
-                o["content_view"] = match_lines(
-                    o["content"], grep_pattern, short, node_start)
-            else:
-                o["content_view"] = None
-            continue
-
-        # Non-searchable (images, docs, etc) → hide
-        o["content_view"] = None
 
 
 # ── codegen ──
@@ -741,7 +624,7 @@ def _record_chains(harness, records, segment_count):
 
 
 def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
-            grep_pattern=None, quiet=False, conversation=None, harness=None):
+            quiet=False, conversation=None, harness=None):
     if output_dir is None:
         output_dir = os.path.dirname(os.path.abspath(input_path)) or "."
     os.makedirs(output_dir, exist_ok=True)
@@ -781,10 +664,8 @@ def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
         sfx = f"_{i+1}" if len(chains) > 1 else ""
         ffn = f"{base}{sfx}.txt"
         mfn = f"{base}{sfx}.min.txt"
-        vfn = f"{base}{sfx}.view.txt"
         fp = os.path.join(output_dir, ffn)
         mp = os.path.join(output_dir, mfn)
-        vp = os.path.join(output_dir, vfn)
         data_ctr = [0]
 
         ir = render_conversation(
@@ -807,25 +688,15 @@ def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
         with open(fp, "w", encoding="utf-8") as f: f.write("\n".join(full))
         with open(mp, "w", encoding="utf-8") as f: f.write("\n".join(brief))
 
-        if grep_pattern:
-            lower_view(ir, ffn, grep_pattern)
-            view = emit(ir, "content_view")
-            with open(vp, "w", encoding="utf-8") as f: f.write("\n".join(view))
-
         ft, bt = "\n".join(full), "\n".join(brief)
         _cnt = lambda s: sum(1 for t in _tokenize(s) if t.strip())
         results.append((fp, ir))
-        paths.append((fp, mp, vp if grep_pattern else None,
-                       len(full), _cnt(ft), len(brief), _cnt(bt)))
+        paths.append((fp, mp, len(full), _cnt(ft), len(brief), _cnt(bt)))
 
     if not quiet:
-        for fp, _, _, fl, fw, _, _ in paths:
+        for fp, _, fl, fw, _, _ in paths:
             print(f"  {fp}  ({fl} lines, {fw} words)")
-        for _, mp, _, _, _, bl, bw in paths:
+        for _, mp, _, _, bl, bw in paths:
             print(f"  {mp}  ({bl} lines, {bw} words)")
-        if grep_pattern:
-            for _, _, vp, _, _, _, _ in paths:
-                if vp:
-                    print(f"  {vp}")
 
     return results
