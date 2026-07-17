@@ -8,9 +8,15 @@ import sys
 import click
 
 from .history.errors import HistoryError
-from .history.models import HARNESS_CHOICES, HarnessFilter, SearchHit, SessionRecord
+from .history.models import HarnessFilter, SearchHit, SessionRecord
 from .history.refs import read_ref
+from .history.registry import DESCRIPTORS, HARNESS_CHOICES
 from .history.service import collect_sessions, compile_session, filter_sessions, search_sessions
+
+_HARNESS_LABELS = ", ".join(descriptor.label for descriptor in DESCRIPTORS[:-1])
+_HARNESS_LABELS += f", and {DESCRIPTORS[-1].label}"
+_LIST_HELP = f"List {_HARNESS_LABELS} sessions."
+_SEARCH_HELP = f"Search recent {_HARNESS_LABELS} sessions."
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -19,7 +25,7 @@ def main() -> None:
     _ensure_stdout_utf8()
 
 
-@main.command("list")
+@main.command("list", help=_LIST_HELP)
 @click.option("--harness", type=click.Choice(HARNESS_CHOICES), default="all", show_default=True)
 @click.option("--cwd", type=click.Path(path_type=str), help="Filter by exact session cwd.")
 @click.option("--latest", is_flag=True, help="Return only the newest matching session.")
@@ -44,7 +50,6 @@ def list_cmd(
     include_delegated: bool,
     as_json: bool,
 ) -> None:
-    """List Claude Code, Codex, OMP, T3 Code, and Reasonix sessions."""
     try:
         records = filter_sessions(
             collect_sessions(harness, include_delegated=include_delegated), cwd, latest, limit
@@ -54,7 +59,7 @@ def list_cmd(
     _print_records(records, as_json)
 
 
-@main.command()
+@main.command(help=_SEARCH_HELP)
 @click.argument("pattern")
 @click.option("--harness", type=click.Choice(HARNESS_CHOICES), default="all", show_default=True)
 @click.option("--cwd", type=click.Path(path_type=str), help="Filter by exact session cwd.")
@@ -81,7 +86,6 @@ def search(
     include_delegated: bool,
     as_json: bool,
 ) -> None:
-    """Search recent Claude Code, Codex, OMP, T3 Code, and Reasonix sessions."""
     flags = re.IGNORECASE if ignore_case else 0
     try:
         compiled = re.compile(pattern, flags)
@@ -121,15 +125,19 @@ def read_cmd(ref: str) -> None:
 
 def _print_records(records: list[SessionRecord], as_json: bool) -> None:
     if as_json:
-        json.dump(records, sys.stdout, ensure_ascii=False, indent=2)
+        public_records = [
+            {key: value for key, value in record.items() if key != "alias_keys"}
+            for record in records
+        ]
+        json.dump(public_records, sys.stdout, ensure_ascii=False, indent=2)
         if records:
             sys.stdout.write("\n")
         return
     for rec in records:
         cwd = f" cwd={rec['cwd']}" if rec.get("cwd") else ""
         title = f" title={rec['title']}" if rec.get("title") else ""
-        source = " (delegated)" if rec.get("source") == "subagent" else ""
-        print(f"{rec['harness']}{source}\t{rec.get('timestamp') or '-'}\t{rec['path']}{cwd}{title}")
+        kind = " (delegated)" if rec.get("kind") == "delegated" else ""
+        print(f"{rec['harness']}{kind}\t{rec.get('timestamp') or '-'}\t{rec['path']}{cwd}{title}")
 
 
 def _print_hits(hits: list[SearchHit], as_json: bool) -> None:

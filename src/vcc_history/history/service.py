@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import compiler, vcc
@@ -10,9 +11,9 @@ from .config import HistoryConfig
 from .errors import HistoryError
 from .models import HarnessFilter, SearchHit, SessionRecord
 from .refs import absolute_ref
-from .sources import SOURCES, selected_sources
+from .registry import SOURCES, selected_sources
 from .sources import t3code
-from .sources.base import canonical_path, ensure_private_cache_path
+from .sources.base import canonical_path, ensure_private_cache_path, parse_instant
 
 
 def collect_sessions(
@@ -26,15 +27,46 @@ def collect_sessions(
         records.extend(source.collect(resolved, include_delegated=include_delegated))
 
     if harness == "all":
-        deduped: dict[str, SessionRecord] = {}
-        for record in records:
-            existing = deduped.get(record["path"])
-            if existing is None or record["harness"] == "t3code":
-                deduped[record["path"]] = record
-        records = list(deduped.values())
+        records = _deduplicate_records(records)
 
-    records.sort(key=lambda rec: (rec.get("timestamp") or "", rec["path"]))
+    records.sort(key=_session_sort_key)
     return records
+
+
+def _deduplicate_records(records: list[SessionRecord]) -> list[SessionRecord]:
+    alias_owners: dict[str, SessionRecord] = {}
+
+    for record in records:
+        matches = {
+            id(existing): existing
+            for key in _alias_keys(record)
+            if (existing := alias_owners.get(key)) is not None
+        }
+        candidates = [*matches.values(), record]
+        winner = next(
+            (candidate for candidate in reversed(candidates) if candidate["harness"] == "t3code"),
+            candidates[0],
+        )
+        merged_aliases = list(
+            dict.fromkeys(key for candidate in candidates for key in _alias_keys(candidate))
+        )
+        winner["alias_keys"] = merged_aliases
+        alias_owners.update(dict.fromkeys(merged_aliases, winner))
+
+    return list({id(record): record for record in alias_owners.values()}.values())
+
+
+def _alias_keys(record: SessionRecord) -> list[str]:
+    return record.get("alias_keys") or [f"path:{canonical_path(record['path'])}"]
+
+
+def _session_sort_key(record: SessionRecord) -> tuple[bool, datetime, str]:
+    instant = parse_instant(record.get("timestamp"))
+    return (
+        instant is not None,
+        instant or datetime.min.replace(tzinfo=timezone.utc),
+        record["path"],
+    )
 
 
 def filter_sessions(

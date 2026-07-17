@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import fnmatch
-import json
 import os
 import stat
-from collections.abc import Iterator
-from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import HistoryConfig
 from ..json_utils import string_or_none
 from ..models import SessionRecord
-from .base import ExactCwdMixin
+from .base import ExactCwdMixin, file_alias_keys, finalize_record, instant_bounds, snapshot_records
 
 
 class ClaudeSource(ExactCwdMixin):
@@ -28,18 +25,17 @@ class ClaudeSource(ExactCwdMixin):
 
 def record_from_path(path: str) -> SessionRecord | None:
     path_obj = Path(path)
-    source = "subagent" if _is_subagent_path(path_obj) else None
+    kind = "delegated" if _is_subagent_path(path_obj) else "main"
     session_id: str | None = None
     cwd: str | None = None
     ai_title: str | None = None
     custom_title: str | None = None
     model: str | None = None
-    latest_timestamp: tuple[datetime, str] | None = None
+    timestamps: list[object] = []
     has_conversation_message = False
 
     try:
-        records = _snapshot_records(path)
-        for obj in records:
+        for obj in snapshot_records(path):
             message = obj.get("message")
             if (
                 obj.get("type") in {"user", "assistant"}
@@ -55,12 +51,7 @@ def record_from_path(path: str) -> SessionRecord | None:
             if cwd is None:
                 cwd = _nonempty_string(obj.get("cwd"))
 
-            timestamp = _nonempty_string(obj.get("timestamp"))
-            parsed_timestamp = _parse_timestamp(timestamp)
-            if timestamp and parsed_timestamp and (
-                latest_timestamp is None or parsed_timestamp >= latest_timestamp[0]
-            ):
-                latest_timestamp = (parsed_timestamp, timestamp)
+            timestamps.append(obj.get("timestamp"))
 
             if isinstance(message, dict):
                 nested_model = _nonempty_string(message.get("model"))
@@ -81,38 +72,27 @@ def record_from_path(path: str) -> SessionRecord | None:
     if not has_conversation_message:
         return None
 
-    if source == "subagent":
+    if kind == "delegated":
         session_id = path_obj.stem.removeprefix("agent-")
 
-    return {
-        "harness": "claude",
-        "path": os.path.abspath(path),
-        "session_id": session_id,
-        "timestamp": latest_timestamp[1] if latest_timestamp else None,
-        "cwd": cwd,
-        "title": custom_title or ai_title,
-        "source": source,
-        "provider": None,
-        "model": model,
-    }
-
-
-def _snapshot_records(path: str) -> Iterator[dict[str, object]]:
-    with open(path, "rb") as fh:
-        remaining = os.fstat(fh.fileno()).st_size
-        while remaining > 0:
-            raw_line = fh.readline(remaining)
-            if not raw_line:
-                break
-            remaining -= len(raw_line)
-            if not raw_line.strip():
-                continue
-            try:
-                value = json.loads(raw_line)
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                continue
-            if isinstance(value, dict):
-                yield value
+    absolute_path = os.path.abspath(path)
+    created_at, updated_at = instant_bounds(timestamps)
+    return finalize_record(
+        {
+            "harness": "claude",
+            "path": absolute_path,
+            "session_id": session_id,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "kind": kind,
+            "cwd": cwd,
+            "title": custom_title or ai_title,
+            "source": "subagent" if kind == "delegated" else None,
+            "provider": None,
+            "model": model,
+            "alias_keys": file_alias_keys("claude", absolute_path, session_id),
+        }
+    )
 
 
 def _session_paths(config: HistoryConfig, include_delegated: bool) -> list[str]:
@@ -202,18 +182,6 @@ def _has_conversation_content(message: dict[str, object]) -> bool:
     if isinstance(content, str):
         return bool(content.strip())
     return isinstance(content, list) and bool(content)
-
-
-def _parse_timestamp(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _nonempty_string(value: object) -> str | None:

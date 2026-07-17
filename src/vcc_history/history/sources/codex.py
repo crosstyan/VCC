@@ -5,9 +5,9 @@ import os
 from pathlib import Path
 
 from ..config import HistoryConfig
-from ..json_utils import read_first_json, string_or_none
+from ..json_utils import string_or_none
 from ..models import SessionRecord
-from .base import ExactCwdMixin
+from .base import ExactCwdMixin, file_alias_keys, finalize_record, instant_bounds, snapshot_records
 
 
 class CodexSource(ExactCwdMixin):
@@ -27,22 +27,38 @@ class CodexSource(ExactCwdMixin):
 
 
 def record_from_path(path: str) -> SessionRecord | None:
-    obj = read_first_json(path)
-    if not obj or obj.get("type") != "session_meta":
+    try:
+        records = snapshot_records(path)
+        obj = next(records, None)
+        if not obj or obj.get("type") != "session_meta":
+            return None
+        payload_obj = obj.get("payload")
+        payload = payload_obj if isinstance(payload_obj, dict) else {}
+        timestamps = [obj.get("timestamp")]
+        timestamps.extend(record.get("timestamp") for record in records)
+    except OSError:
         return None
-    payload_obj = obj.get("payload")
-    payload = payload_obj if isinstance(payload_obj, dict) else {}
-    return {
-        "harness": "codex",
-        "path": os.path.abspath(path),
-        "session_id": string_or_none(payload.get("id")),
-        "timestamp": string_or_none(payload.get("timestamp") or obj.get("timestamp")),
-        "cwd": string_or_none(payload.get("cwd")),
-        "title": None,
-        "source": string_or_none(payload.get("source")),
-        "provider": None,
-        "model": None,
-    }
+
+    absolute_path = os.path.abspath(path)
+    session_id = string_or_none(payload.get("id"))
+    created_at = string_or_none(payload.get("timestamp") or obj.get("timestamp"))
+    _, updated_at = instant_bounds(timestamps)
+    return finalize_record(
+        {
+            "harness": "codex",
+            "path": absolute_path,
+            "session_id": session_id,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "kind": "main",
+            "cwd": string_or_none(payload.get("cwd")),
+            "title": None,
+            "source": string_or_none(payload.get("source")),
+            "provider": None,
+            "model": None,
+            "alias_keys": file_alias_keys("codex", absolute_path, session_id),
+        }
+    )
 
 
 def rollout_for_session_id(session_id: str | None, config: HistoryConfig) -> Path | None:

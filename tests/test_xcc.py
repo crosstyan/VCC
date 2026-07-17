@@ -21,11 +21,22 @@ if str(SRC) not in sys.path:
 from vcc_history.cli import main
 from vcc_history.history import service
 from vcc_history.history.refs import read_ref
+from vcc_history.history.registry import DESCRIPTORS, HARNESS_CHOICES, HARNESS_IDS
+from vcc_history.history.sources.base import file_alias_keys, finalize_record
+from vcc_history.history.sources.codex import record_from_path as codex_record_from_path
 from vcc_history.history.sources.reasonix import _workspace_slug
 from vcc_history.history.sources.t3code import _export_path
 
 
 FIXTURES = ROOT / "tests" / "fixtures"
+
+
+class _StaticSource:
+    def __init__(self, records):
+        self.records = records
+
+    def collect(self, config, include_delegated=False):
+        return list(self.records)
 
 
 class XccTests(unittest.TestCase):
@@ -181,21 +192,37 @@ class XccTests(unittest.TestCase):
         self.assertEqual(claude["cwd"], str(self.workspace))
         self.assertEqual(claude["title"], "Sanitized Claude fixture")
         self.assertEqual(claude["model"], "claude-opus-4-1")
-        self.assertEqual(claude["timestamp"], "2026-06-24T10:00:07Z")
+        self.assertEqual(claude["created_at"], "2026-06-24T10:00:00Z")
+        self.assertEqual(claude["updated_at"], "2026-06-24T10:00:07Z")
+        self.assertEqual(claude["timestamp"], claude["updated_at"])
+        self.assertEqual(claude["kind"], "main")
         self.assertIsNone(claude["source"])
         claude_records = [record for record in records if record["harness"] == "claude"]
         self.assertEqual(claude_records, [claude])
+        codex = next(record for record in records if record["harness"] == "codex")
+        self.assertEqual(codex["created_at"], "2026-04-07T06:38:38.648000Z")
+        self.assertEqual(codex["updated_at"], "2026-04-07T06:40:11Z")
+        self.assertEqual(codex["timestamp"], codex["updated_at"])
+        self.assertEqual(codex["kind"], "main")
         omp = next(record for record in records if record["harness"] == "omp")
         self.assertEqual(omp["cwd"], "/tmp/omp-project")
         self.assertEqual(omp["title"], "OMP fixture")
         self.assertEqual(omp["provider"], "anthropic")
         self.assertEqual(omp["model"], "claude-sonnet-4-5")
+        self.assertEqual(omp["created_at"], "2026-06-23T00:00:00Z")
+        self.assertEqual(omp["updated_at"], "2026-06-23T00:00:06Z")
+        self.assertEqual(omp["timestamp"], omp["updated_at"])
+        self.assertEqual(omp["kind"], "main")
         reasonix = next(record for record in records if record.get("session_id") == "reasonix-session")
         self.assertEqual(reasonix["session_id"], "reasonix-session")
         self.assertEqual(reasonix["cwd"], "/tmp/reasonix-project")
         self.assertEqual(reasonix["title"], "Reasonix fixture")
         self.assertEqual(reasonix["provider"], "deepseek-flash")
         self.assertEqual(reasonix["model"], "deepseek-v4-flash")
+        self.assertEqual(reasonix["created_at"], "2026-06-23T01:02:03Z")
+        self.assertEqual(reasonix["updated_at"], "2026-06-23T01:02:04Z")
+        self.assertEqual(reasonix["timestamp"], reasonix["updated_at"])
+        self.assertEqual(reasonix["kind"], "main")
         paths = {record["path"] for record in records}
         self.assertNotIn(str(self.reasonix_subagent_session), paths)
         self.assertNotIn(str(self.reasonix_cleanup_session), paths)
@@ -269,8 +296,9 @@ class XccTests(unittest.TestCase):
             {record["path"] for record in all_records},
             {str(self.claude_session), str(self.claude_subagent_session)},
         )
-        subagent = next(record for record in all_records if record["source"] == "subagent")
+        subagent = next(record for record in all_records if record["kind"] == "delegated")
         self.assertEqual(subagent["session_id"], "history")
+        self.assertEqual(subagent["source"], "subagent")
         self.assertNotIn(
             str(self.claude_project / "other" / "nested.jsonl"),
             {record["path"] for record in all_records},
@@ -288,9 +316,12 @@ class XccTests(unittest.TestCase):
             {record["path"] for record in all_records},
             {str(self.reasonix_session), str(self.reasonix_subagent_session)},
         )
-        delegated = next(record for record in all_records if record["source"] == "subagent")
+        delegated = next(record for record in all_records if record["kind"] == "delegated")
         self.assertEqual(delegated["session_id"], "sa_reasonix_visible")
         self.assertEqual(delegated["cwd"], "/tmp/reasonix-project")
+        self.assertEqual(delegated["created_at"], "2026-06-23T01:02:05Z")
+        self.assertEqual(delegated["updated_at"], "2026-06-23T01:02:06Z")
+        self.assertEqual(delegated["source"], "subagent")
 
     def test_claude_symlink_alias_is_deduplicated_in_favor_of_real_path(self):
         alias = self.claude_project / "claude_alias.jsonl"
@@ -310,6 +341,7 @@ class XccTests(unittest.TestCase):
 
         main = next(record for record in records if record["session_id"] == "claude-session-basic")
         self.assertEqual(main["path"], str(self.claude_session))
+        self.assertEqual(main["kind"], "main")
         self.assertIsNone(main["source"])
         self.assertNotIn(str(alias), {record["path"] for record in records})
 
@@ -326,10 +358,79 @@ class XccTests(unittest.TestCase):
 
         self.assertEqual([record["path"] for record in records], [str(self.claude_session)])
 
-    def test_cli_exposes_claude_choices_without_renaming_existing_harnesses(self):
+    def test_collect_sessions_sorts_mixed_timestamp_formats_by_instant(self):
+        records = [
+            {"harness": "claude", "path": "/tmp/z-late", "timestamp": "2026-07-17T01:00:00Z"},
+            {"harness": "claude", "path": "/tmp/a-same", "timestamp": "2026-07-17T02:00:00+01:00"},
+            {"harness": "claude", "path": "/tmp/unknown", "timestamp": None},
+            {"harness": "claude", "path": "/tmp/early", "timestamp": "2026-07-17T01:00:00+02:00"},
+            {"harness": "claude", "path": "/tmp/middle", "timestamp": "2026-07-17 00:30:00"},
+        ]
+        with mock.patch(
+            "vcc_history.history.service.selected_sources",
+            return_value=[_StaticSource(records)],
+        ):
+            sorted_records = service.collect_sessions("claude")
+
+        self.assertEqual(
+            [record["path"] for record in sorted_records],
+            [
+                "/tmp/unknown",
+                "/tmp/early",
+                "/tmp/middle",
+                "/tmp/a-same",
+                "/tmp/z-late",
+            ],
+        )
+
+    def test_all_harness_dedup_connects_symlink_aliases_and_prefers_t3code(self):
+        alias = self.root / "codex-alias.jsonl"
+        alias.symlink_to(self.codex_session)
+        codex_record = codex_record_from_path(str(alias))
+        self.assertIsNotNone(codex_record)
+
+        t3_record = finalize_record(
+            {
+                "harness": "t3code",
+                "path": str(self.codex_session.resolve()),
+                "session_id": "thread-alias",
+                "created_at": "2026-04-07T06:38:38.648Z",
+                "updated_at": "2026-04-07T06:40:11Z",
+                "kind": "main",
+                "cwd": "/repo",
+                "title": "T3 alias",
+                "source": str(self.t3_home / "state.sqlite"),
+                "provider": "codex",
+                "model": "gpt-5.5",
+                "alias_keys": file_alias_keys(
+                    "t3code", self.codex_session.resolve(), "thread-alias"
+                ),
+            }
+        )
+        with mock.patch(
+            "vcc_history.history.service.selected_sources",
+            return_value=[_StaticSource([codex_record]), _StaticSource([t3_record])],
+        ):
+            records = service.collect_sessions("all")
+
+        self.assertEqual(records, [t3_record])
+        self.assertEqual(records[0]["harness"], "t3code")
+        self.assertIn(
+            f"path:{self.codex_session.resolve()}",
+            records[0]["alias_keys"],
+        )
+
+    def test_registry_drives_cli_choices_and_harness_labels(self):
         help_result = CliRunner().invoke(main, ["list", "--help"])
         self.assertEqual(help_result.exit_code, 0, help_result.output)
-        self.assertIn("all|claude|omp|codex|t3code|reasonix", help_result.output)
+        self.assertEqual(HARNESS_CHOICES, ("all", *HARNESS_IDS))
+        self.assertEqual(
+            tuple(descriptor.id for descriptor in DESCRIPTORS),
+            HARNESS_IDS,
+        )
+        self.assertIn("|".join(HARNESS_CHOICES), help_result.output)
+        for descriptor in DESCRIPTORS:
+            self.assertIn(descriptor.label, help_result.output)
         self.assertIn("--include-delegated", help_result.output)
         self.assertIn("Include delegated (subagent)", help_result.output)
         self.assertIn("transcripts.", help_result.output)
@@ -342,6 +443,19 @@ class XccTests(unittest.TestCase):
         self.assertIn("omp\t", list_result.output)
         self.assertIn("reasonix\t", list_result.output)
         self.assertNotIn("(delegated)", list_result.output)
+
+        json_result = CliRunner().invoke(
+            main, ["list", "--harness", "all", "--limit", "10", "--json"]
+        )
+        self.assertEqual(json_result.exit_code, 0, json_result.output)
+        public_records = json.loads(json_result.output)
+        self.assertTrue(public_records)
+        for record in public_records:
+            self.assertIn("created_at", record)
+            self.assertIn("updated_at", record)
+            self.assertIn("timestamp", record)
+            self.assertIn("kind", record)
+            self.assertNotIn("alias_keys", record)
 
         delegated_result = CliRunner().invoke(
             main,
@@ -384,6 +498,7 @@ class XccTests(unittest.TestCase):
 
         search_help = CliRunner().invoke(main, ["search", "--help"])
         self.assertEqual(search_help.exit_code, 0, search_help.output)
+        self.assertIn("|".join(HARNESS_CHOICES), search_help.output)
         self.assertIn("--session-limit", search_help.output)
         self.assertIn("Newest sessions to scan (0 = all).", search_help.output)
         self.assertNotIn("--limit", search_help.output)
@@ -812,6 +927,10 @@ class XccTests(unittest.TestCase):
         self.assertEqual(len(records), 2)
         self.assertEqual(records[0]["harness"], "t3code")
         self.assertEqual(records[0]["cwd"], "/tmp/t3-project")
+        self.assertEqual(records[0]["created_at"], "2026-06-23T01:00:00Z")
+        self.assertEqual(records[0]["updated_at"], "2026-06-23T01:00:04Z")
+        self.assertEqual(records[0]["timestamp"], records[0]["updated_at"])
+        self.assertEqual(records[0]["kind"], "main")
 
         result = CliRunner().invoke(main, ["search", "T3 Code history", "--harness", "t3code", "--json"])
 

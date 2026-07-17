@@ -16,7 +16,12 @@ from ..errors import HistoryError
 from ..json_utils import json_or_none, nested_get, string_or_none
 from ..models import SessionRecord
 from . import codex
-from .base import ExactCwdMixin, canonical_path, ensure_private_cache_path
+from .base import (
+    ExactCwdMixin,
+    canonical_path,
+    ensure_private_cache_path,
+    finalize_record,
+)
 
 _LOG_LINE_RE = re.compile(r"^\[[^\]]+\]\s+(?:NTIVE|CANON):\s+(.+)$")
 
@@ -242,18 +247,26 @@ def records_from_db(db_path: Path, config: HistoryConfig) -> list[SessionRecord]
             source_path = codex.rollout_for_session_id(string_or_none(row["provider_thread_id"]), config)
         path_text = str(source_path) if source_path is not None else _ref(db_path, thread_id)
         provider, model = _model_parts(row["model_selection_json"], row["provider_name"])
+        alias_keys = [f"thread:t3code:{canonical_path(db_path)}:{thread_id}"]
+        if source_path is not None:
+            alias_keys.insert(0, f"path:{canonical_path(source_path)}")
         records.append(
-            {
-                "harness": "t3code",
-                "path": path_text,
-                "session_id": thread_id,
-                "timestamp": string_or_none(row["updated_at"] or row["created_at"]),
-                "cwd": string_or_none(row["workspace_root"]),
-                "title": string_or_none(row["title"]),
-                "source": str(db_path),
-                "provider": provider,
-                "model": model,
-            }
+            finalize_record(
+                {
+                    "harness": "t3code",
+                    "path": path_text,
+                    "session_id": thread_id,
+                    "created_at": string_or_none(row["created_at"]),
+                    "updated_at": string_or_none(row["updated_at"]),
+                    "kind": "main",
+                    "cwd": string_or_none(row["workspace_root"]),
+                    "title": string_or_none(row["title"]),
+                    "source": str(db_path),
+                    "provider": provider,
+                    "model": model,
+                    "alias_keys": alias_keys,
+                }
+            )
         )
     return records
 

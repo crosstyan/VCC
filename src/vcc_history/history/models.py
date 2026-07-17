@@ -2,23 +2,25 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict
 
-Harness = Literal["claude", "omp", "codex", "t3code", "reasonix"]
-HarnessFilter = Literal["all", "claude", "omp", "codex", "t3code", "reasonix"]
-
-HARNESS_CHOICES: tuple[str, ...] = ("all", "claude", "omp", "codex", "t3code", "reasonix")
-SOURCE_ORDER: tuple[Harness, ...] = ("claude", "codex", "omp", "t3code", "reasonix")
+Harness = str
+HarnessFilter = str
+SessionKind = Literal["main", "delegated"]
 
 
 class SessionRecord(TypedDict, total=False):
     harness: Harness
     path: str
     session_id: str | None
+    created_at: str | None
+    updated_at: str | None
     timestamp: str | None
+    kind: SessionKind
     cwd: str | None
     title: str | None
     source: str | None
     provider: str | None
     model: str | None
+    alias_keys: list[str]
 
 
 class SearchHit(TypedDict):

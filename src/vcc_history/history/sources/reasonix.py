@@ -8,7 +8,7 @@ from pathlib import Path
 from ..config import HistoryConfig
 from ..json_utils import read_first_json, read_json_file, split_model_ref, string_or_none
 from ..models import SessionRecord
-from .base import canonical_path
+from .base import canonical_path, file_alias_keys, finalize_record
 
 
 class ReasonixSource:
@@ -104,12 +104,13 @@ def _record_from_path(path: str, config: HistoryConfig) -> SessionRecord | None:
     model = string_or_none(meta.get("model")) or string_or_none(meta.get("Model")) or _model_from_filename(path)
     provider, model_id = split_model_ref(model)
     session_id = string_or_none(meta.get("id")) or string_or_none(meta.get("ref")) or Path(path).stem
-    timestamp = (
-        string_or_none(meta.get("updated_at"))
-        or string_or_none(meta.get("updatedAt"))
-        or string_or_none(meta.get("created_at"))
+    created_at = (
+        string_or_none(meta.get("created_at"))
         or string_or_none(meta.get("createdAt"))
         or _timestamp_from_filename(path)
+    )
+    updated_at = string_or_none(meta.get("updated_at")) or string_or_none(
+        meta.get("updatedAt")
     )
     title = (
         string_or_none(meta.get("topic_title"))
@@ -117,17 +118,24 @@ def _record_from_path(path: str, config: HistoryConfig) -> SessionRecord | None:
         or string_or_none(meta.get("preview"))
     )
     cwd = string_or_none(meta.get("workspace_root") or meta.get("workspaceRoot"))
-    return {
-        "harness": "reasonix",
-        "path": os.path.abspath(path),
-        "session_id": session_id,
-        "timestamp": timestamp,
-        "cwd": os.path.abspath(cwd) if cwd else None,
-        "title": title,
-        "source": "subagent" if Path(path).parent.name == "subagents" else None,
-        "provider": provider,
-        "model": model_id,
-    }
+    absolute_path = os.path.abspath(path)
+    kind = "delegated" if Path(path).parent.name == "subagents" else "main"
+    return finalize_record(
+        {
+            "harness": "reasonix",
+            "path": absolute_path,
+            "session_id": session_id,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "kind": kind,
+            "cwd": os.path.abspath(cwd) if cwd else None,
+            "title": title,
+            "source": "subagent" if kind == "delegated" else None,
+            "provider": provider,
+            "model": model_id,
+            "alias_keys": file_alias_keys("reasonix", absolute_path, session_id),
+        }
+    )
 
 
 def _session_paths(config: HistoryConfig, include_delegated: bool) -> list[str]:

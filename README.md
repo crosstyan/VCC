@@ -57,6 +57,8 @@ List recent main sessions for the current project:
 xcc list --harness all --cwd "$PWD" --limit 20
 ```
 
+Add `--json` for structured records. Each record includes normalized UTC `created_at` and `updated_at` values, the compatibility `timestamp` alias (updated time, falling back to created time), and `kind` (`main` or `delegated`).
+
 Search recent main sessions from all supported harnesses:
 
 ```bash
@@ -163,6 +165,7 @@ Command: /usr/bin/zsh -lc 'pwd && ls -la'
 - `pyproject.toml`: PEP 621 package metadata and the installed `xcc` entry point
 - `src/vcc_history/cli.py`: typed Click frontend for the `xcc` command
 - `src/vcc_history/history/service.py`: cross-harness history orchestration
+- `src/vcc_history/history/registry.py`: ordered harness descriptors and source factories
 - `src/vcc_history/history/sources/`: Claude Code, Codex, OMP, T3 Code, and Reasonix history adapters
 - `src/vcc_history/history/compiler.py`: typed wrapper around the packaged VCC compiler
 - `src/vcc_history/history/vcc.py`: legacy single-module compiler pending the typed-IR split

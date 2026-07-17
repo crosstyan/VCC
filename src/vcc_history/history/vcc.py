@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Legacy single-module compiler pending the typed-IR split.
 
-View-oriented Conversation Compiler for Claude Code, Codex, OMP, T3 Code, and Reasonix logs.
+View-oriented Conversation Compiler for supported coding-agent logs.
 
 Produces per conversation chain:
   .txt       Full transcript (lossless rendering of JSONL)

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import glob
-import json
 import os
 
 from ..config import HistoryConfig
-from ..json_utils import read_first_json, split_model_ref, string_or_none
+from ..json_utils import split_model_ref, string_or_none
 from ..models import SessionRecord
-from .base import ExactCwdMixin
+from .base import ExactCwdMixin, file_alias_keys, finalize_record, instant_bounds, snapshot_records
 
 
 class OmpSource(ExactCwdMixin):
@@ -27,37 +26,38 @@ class OmpSource(ExactCwdMixin):
 
 
 def record_from_path(path: str) -> SessionRecord | None:
-    obj = read_first_json(path)
-    if not obj or obj.get("type") != "session":
-        return None
-    model = _read_model_change(path) or string_or_none(obj.get("modelId") or obj.get("model"))
-    provider, model_id = split_model_ref(model)
-    return {
-        "harness": "omp",
-        "path": os.path.abspath(path),
-        "session_id": string_or_none(obj.get("id")),
-        "timestamp": string_or_none(obj.get("timestamp")),
-        "cwd": string_or_none(obj.get("cwd")),
-        "title": string_or_none(obj.get("title")),
-        "source": None,
-        "provider": provider,
-        "model": model_id,
-    }
-
-
-def _read_model_change(path: str, limit: int = 64) -> str | None:
     try:
-        with open(path, encoding="utf-8") as fh:
-            for index, line in enumerate(fh):
-                if index >= limit:
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                value = json.loads(line)
-                if not isinstance(value, dict) or value.get("type") != "model_change":
-                    continue
-                return string_or_none(value.get("model"))
-    except (OSError, ValueError, TypeError):
+        records = snapshot_records(path)
+        obj = next(records, None)
+        if not obj or obj.get("type") != "session":
+            return None
+        timestamps = [obj.get("timestamp")]
+        model_change: str | None = None
+        for index, record in enumerate(records, start=1):
+            timestamps.append(record.get("timestamp"))
+            if index < 64 and model_change is None and record.get("type") == "model_change":
+                model_change = string_or_none(record.get("model"))
+    except OSError:
         return None
-    return None
+
+    model = model_change or string_or_none(obj.get("modelId") or obj.get("model"))
+    provider, model_id = split_model_ref(model)
+    absolute_path = os.path.abspath(path)
+    session_id = string_or_none(obj.get("id"))
+    _, updated_at = instant_bounds(timestamps)
+    return finalize_record(
+        {
+            "harness": "omp",
+            "path": absolute_path,
+            "session_id": session_id,
+            "created_at": string_or_none(obj.get("timestamp")),
+            "updated_at": updated_at,
+            "kind": "main",
+            "cwd": string_or_none(obj.get("cwd")),
+            "title": string_or_none(obj.get("title")),
+            "source": None,
+            "provider": provider,
+            "model": model_id,
+            "alias_keys": file_alias_keys("omp", absolute_path, session_id),
+        }
+    )
