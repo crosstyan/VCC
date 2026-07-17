@@ -4,6 +4,7 @@ import glob
 import os
 
 from ..config import HistoryConfig
+from ..errors import HistoryStoreError, warn
 from ..json_utils import split_model_ref, string_or_none
 from ..models import SessionRecord
 from .base import ExactCwdMixin, file_alias_keys, finalize_record, instant_bounds, snapshot_records
@@ -13,9 +14,27 @@ class OmpSource(ExactCwdMixin):
     harness = "omp"
 
     def collect(self, config: HistoryConfig, include_delegated: bool = False) -> list[SessionRecord]:
-        sessions_dir = config.omp_agent_dir / "sessions"
-        if not sessions_dir.is_dir():
+        home = config.omp_agent_dir
+        if not home.exists():
             return []
+        try:
+            with os.scandir(home):
+                pass
+        except OSError as error:
+            raise HistoryStoreError("OMP", home, error) from error
+
+        sessions_dir = home / "sessions"
+        if not sessions_dir.exists():
+            return []
+        if not sessions_dir.is_dir():
+            warn(sessions_dir, "expected a directory")
+            return []
+        try:
+            with os.scandir(sessions_dir):
+                pass
+        except OSError as error:
+            raise HistoryStoreError("OMP", sessions_dir, error) from error
+
         records: list[SessionRecord] = []
         pattern = str(sessions_dir / "**" / "*.jsonl")
         for path in glob.glob(pattern, recursive=True):
@@ -37,7 +56,8 @@ def record_from_path(path: str) -> SessionRecord | None:
             timestamps.append(record.get("timestamp"))
             if index < 64 and model_change is None and record.get("type") == "model_change":
                 model_change = string_or_none(record.get("model"))
-    except OSError:
+    except OSError as error:
+        warn(path, error)
         return None
 
     model = model_change or string_or_none(obj.get("modelId") or obj.get("model"))

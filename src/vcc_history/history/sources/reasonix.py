@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from ..config import HistoryConfig
+from ..errors import HistoryStoreError, warn
 from ..json_utils import read_first_json, read_json_file, split_model_ref, string_or_none
 from ..models import SessionRecord
 from .base import canonical_path, file_alias_keys, finalize_record
@@ -140,6 +141,26 @@ def _record_from_path(path: str, config: HistoryConfig) -> SessionRecord | None:
 
 def _session_paths(config: HistoryConfig, include_delegated: bool) -> list[str]:
     home = config.reasonix_home
+    if not home.exists():
+        return []
+    try:
+        with os.scandir(home):
+            pass
+    except OSError as error:
+        raise HistoryStoreError("Reasonix", home, error) from error
+
+    for store_dir in (home / "sessions", home / "projects"):
+        if not store_dir.exists():
+            continue
+        if not store_dir.is_dir():
+            warn(store_dir, "expected a directory")
+            continue
+        try:
+            with os.scandir(store_dir):
+                pass
+        except OSError as error:
+            raise HistoryStoreError("Reasonix", store_dir, error) from error
+
     patterns = [
         home / "sessions" / "*.jsonl",
         home / "projects" / "*" / "sessions" / "*.jsonl",

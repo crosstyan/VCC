@@ -82,7 +82,15 @@ Compile one explicit Claude Code, Codex, OMP, T3 Code, or Reasonix session path 
 xcc compile "/absolute/path/to/session.jsonl"
 ```
 
-`xcc search` automatically writes disposable compiled views beneath `${VCC_CACHE_DIR:-$HOME/.cache/vcc-history}/compiled/` and returns refs into that cache. In contrast, `xcc compile` is an explicit export: it writes `.txt` and `.min.txt` beside the input by default, or under the directory supplied with `-o`.
+`xcc search` automatically writes disposable compiled views beneath `${VCC_CACHE_DIR:-$HOME/.cache/vcc-history}/compiled/` and returns refs into that cache. Unchanged sessions reuse a fingerprinted structural node index, while cache updates and T3 Code thread exports are locked and atomically published so concurrent searches cannot interleave writes. In contrast, `xcc compile` is an explicit export: it writes `.txt` and `.min.txt` beside the input by default, or under the directory supplied with `-o`.
+
+Manage disposable cache data with:
+
+```bash
+xcc cache prune                 # remove orphaned or stale entries
+xcc cache prune --max-age 30    # also remove entries older than 30 days
+xcc cache clear                 # remove all compiled and T3 Code cache data
+```
 
 ## Skills
 

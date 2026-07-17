@@ -3,10 +3,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .errors import HistoryError
+
 
 def read_ref(ref: str) -> str:
     path_text, ranges = split_ref(ref)
-    text = Path(path_text).read_text(encoding="utf-8")
+    try:
+        text = Path(path_text).read_text(encoding="utf-8")
+    except OSError as error:
+        raise HistoryError(f"Could not read ref {ref}: {error}") from error
     if ranges is None:
         return text
     lines = text.splitlines()

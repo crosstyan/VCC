@@ -6,6 +6,7 @@ import stat
 from pathlib import Path
 
 from ..config import HistoryConfig
+from ..errors import HistoryStoreError, warn
 from ..json_utils import string_or_none
 from ..models import SessionRecord
 from .base import ExactCwdMixin, file_alias_keys, finalize_record, instant_bounds, snapshot_records
@@ -66,7 +67,8 @@ def record_from_path(path: str) -> SessionRecord | None:
                 value = _nonempty_string(obj.get("customTitle"))
                 if value:
                     custom_title = value
-    except OSError:
+    except OSError as error:
+        warn(path, error)
         return None
 
     if not has_conversation_message:
@@ -96,27 +98,47 @@ def record_from_path(path: str) -> SessionRecord | None:
 
 
 def _session_paths(config: HistoryConfig, include_delegated: bool) -> list[str]:
-    projects_dir = config.claude_config_dir / "projects"
+    config_dir = config.claude_config_dir
+    if not config_dir.exists():
+        return []
+    try:
+        with os.scandir(config_dir):
+            pass
+    except OSError as error:
+        raise HistoryStoreError("Claude Code", config_dir, error) from error
+
+    projects_dir = config_dir / "projects"
+    if not projects_dir.exists():
+        return []
     if not projects_dir.is_dir():
+        warn(projects_dir, "expected a directory")
         return []
 
     candidates: list[Path] = []
     try:
         with os.scandir(projects_dir) as project_entries:
             for project_entry in project_entries:
-                if not project_entry.is_dir(follow_symlinks=False):
+                try:
+                    is_dir = project_entry.is_dir(follow_symlinks=False)
+                except OSError as error:
+                    warn(project_entry.path, error)
+                    continue
+                if not is_dir:
                     continue
                 project_dir = Path(project_entry.path)
-                candidates.extend(_main_transcripts(project_dir))
+                main_transcripts = _main_transcripts(project_dir)
+                if main_transcripts is None:
+                    continue
+                candidates.extend(main_transcripts)
                 if include_delegated:
                     candidates.extend(_subagent_transcripts(project_dir))
-    except OSError:
-        return []
+    except OSError as error:
+        raise HistoryStoreError("Claude Code", projects_dir, error) from error
 
     return [str(path) for path in _deduplicate_aliases(candidates)]
 
 
-def _main_transcripts(project_dir: Path) -> list[Path]:
+def _main_transcripts(project_dir: Path) -> list[Path] | None:
     try:
         with os.scandir(project_dir) as entries:
             return [
@@ -124,13 +146,18 @@ def _main_transcripts(project_dir: Path) -> list[Path]:
                 for entry in entries
                 if entry.name.endswith(".jsonl") and entry.is_file(follow_symlinks=True)
             ]
-    except OSError:
-        return []
+    except OSError as error:
+        warn(project_dir, error)
+        return None
 
 
 def _subagent_transcripts(project_dir: Path) -> list[Path]:
     paths: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(project_dir, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(
+        project_dir,
+        followlinks=False,
+        onerror=lambda error: warn(error.filename or project_dir, error),
+    ):
         dirnames[:] = [
             dirname for dirname in dirnames if not (Path(dirpath) / dirname).is_symlink()
         ]

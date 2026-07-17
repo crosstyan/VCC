@@ -15,8 +15,8 @@ Usage:
 import json
 import os
 import re
-import sys
 
+from .errors import warn_malformed_json_record
 from .events import Conversation
 from .frontends.claude import parse_events as parse_claude_events
 from .frontends.claude import split_record_segments as split_claude_record_segments
@@ -28,6 +28,9 @@ from .frontends.reasonix import parse_events as parse_reasonix_events
 from .frontends.t3code import parse_events as parse_t3code_events
 from .registry import HARNESS_IDS
 from .render import SEP, render as render_conversation
+
+# Bump when compiler output or search-node semantics change.
+COMPILER_VERSION = "1"
 
 # ── tokenizer ──
 
@@ -121,10 +124,7 @@ def lex(path):
             except (UnicodeDecodeError, json.JSONDecodeError) as error:
                 if not raw_line.endswith((b"\n", b"\r")) and remaining == 0:
                     continue
-                print(
-                    f"warning: {path}:{line_number}: malformed JSON record: {error}",
-                    file=sys.stderr,
-                )
+                warn_malformed_json_record(path, line_number, error)
                 continue
             if isinstance(record, dict):
                 records.append(record)

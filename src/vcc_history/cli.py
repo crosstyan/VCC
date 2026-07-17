@@ -11,7 +11,14 @@ from .history.errors import HistoryError
 from .history.models import HarnessFilter, SearchMatch, SessionRecord
 from .history.refs import read_ref
 from .history.registry import DESCRIPTORS, HARNESS_CHOICES, HARNESS_IDS
-from .history.service import collect_sessions, compile_session, filter_sessions, search_sessions
+from .history.service import (
+    clear_cache,
+    collect_sessions,
+    compile_session,
+    filter_sessions,
+    prune_cache,
+    search_sessions,
+)
 
 _HARNESS_LABELS = ", ".join(descriptor.label for descriptor in DESCRIPTORS[:-1])
 _HARNESS_LABELS += f", and {DESCRIPTORS[-1].label}"
@@ -127,11 +134,50 @@ def compile_cmd(
         raise click.ClickException(str(error)) from error
 
 
+@main.group()
+def cache() -> None:
+    """Manage disposable search and T3 Code caches."""
+
+
+@cache.command("prune")
+@click.option(
+    "--max-age",
+    type=click.FloatRange(min=0),
+    help="Also remove entries older than this many days.",
+)
+def cache_prune(max_age: float | None) -> None:
+    """Remove orphaned, stale, or expired cache entries."""
+    try:
+        removed = prune_cache(max_age_days=max_age)
+    except (HistoryError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    _print_removed_cache_entries(removed)
+
+
+@cache.command("clear")
+def cache_clear() -> None:
+    """Remove all compiled and T3 Code cache data."""
+    try:
+        removed = clear_cache()
+    except HistoryError as error:
+        raise click.ClickException(str(error)) from error
+    _print_removed_cache_entries(removed)
+
+
 @main.command("read")
 @click.argument("ref")
 def read_cmd(ref: str) -> None:
     """Read a compiled transcript ref such as path.txt:10-30."""
-    sys.stdout.write(read_ref(ref))
+    try:
+        sys.stdout.write(read_ref(ref))
+    except HistoryError as error:
+        raise click.ClickException(str(error)) from error
+
+
+def _print_removed_cache_entries(paths: list[object]) -> None:
+    for path in paths:
+        print(f"removed {path}")
+    print(f"Removed {len(paths)} cache entries.")
 
 
 def _print_records(records: list[SessionRecord], as_json: bool) -> None:

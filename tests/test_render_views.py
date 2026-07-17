@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 
 
-class CodexVccTests(unittest.TestCase):
+class RenderViewTests(unittest.TestCase):
     vcc = vcc
 
     def test_claude_basic_preserves_thinking_tools_results_and_chunk_merging(self):

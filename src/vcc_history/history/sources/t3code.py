@@ -5,6 +5,8 @@ import json
 import os
 import re
 import sqlite3
+import stat
+import tempfile
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
@@ -12,7 +14,7 @@ from typing import Any
 from urllib.parse import quote, unquote
 
 from ..config import HistoryConfig
-from ..errors import HistoryError
+from ..errors import HistoryError, HistoryStoreError, warn
 from ..json_utils import json_or_none, nested_get, string_or_none
 from ..models import SessionRecord
 from . import codex
@@ -20,10 +22,13 @@ from .base import (
     ExactCwdMixin,
     canonical_path,
     ensure_private_cache_path,
+    exclusive_cache_lock,
     finalize_record,
 )
 
 _LOG_LINE_RE = re.compile(r"^\[[^\]]+\]\s+(?:NTIVE|CANON):\s+(.+)$")
+# Bump when the cached T3 projection JSONL format changes.
+_EXPORT_VERSION = "1"
 
 
 class T3CodeSource(ExactCwdMixin):
@@ -57,7 +62,15 @@ def db_paths(config: HistoryConfig) -> list[Path]:
             resolved = candidate.expanduser().resolve()
         except OSError:
             resolved = candidate.expanduser()
-        if resolved in seen or not resolved.is_file():
+        if resolved in seen:
+            continue
+        try:
+            mode = resolved.stat().st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise HistoryStoreError("T3 Code", resolved, error) from error
+        if not stat.S_ISREG(mode):
             continue
         seen.add(resolved)
         if is_t3code_db(resolved):
@@ -87,8 +100,44 @@ def parse_ref(value: str) -> tuple[Path, str] | None:
 def export_thread(db_path: Path, thread_id: str, config: HistoryConfig) -> Path:
     cache_root = Path(canonical_path(config.cache_dir))
     out_path = _export_path(db_path, thread_id, cache_root)
+    fingerprint_path = _export_fingerprint_path(out_path)
     ensure_private_cache_path(cache_root, out_path.parent)
 
+    with exclusive_cache_lock(_export_lock_path(out_path)):
+        fingerprint = export_fingerprint(db_path)
+        if _export_is_current(out_path, fingerprint_path, fingerprint):
+            return out_path
+
+        entries = _export_entries(db_path, thread_id)
+        data_fd, data_name = tempfile.mkstemp(
+            prefix=f".{out_path.name}.tmp-{os.getpid()}-",
+            dir=out_path.parent,
+        )
+        fingerprint_fd, fingerprint_name = tempfile.mkstemp(
+            prefix=f".{fingerprint_path.name}.tmp-{os.getpid()}-",
+            dir=out_path.parent,
+        )
+        try:
+            with os.fdopen(data_fd, "w", encoding="utf-8") as fh:
+                for entry in entries:
+                    json.dump(entry, fh, ensure_ascii=False, separators=(",", ":"))
+                    fh.write("\n")
+            with os.fdopen(fingerprint_fd, "w", encoding="utf-8") as fh:
+                fh.write(fingerprint)
+            os.chmod(data_name, 0o600)
+            os.chmod(fingerprint_name, 0o600)
+            os.replace(data_name, out_path)
+            os.replace(fingerprint_name, fingerprint_path)
+        finally:
+            for temp_name in (data_name, fingerprint_name):
+                try:
+                    os.unlink(temp_name)
+                except FileNotFoundError:
+                    pass
+    return out_path
+
+
+def _export_entries(db_path: Path, thread_id: str) -> list[dict[str, Any]]:
     with closing(_sqlite_ro(db_path)) as conn:
         thread = conn.execute(
             """
@@ -206,11 +255,16 @@ def export_thread(db_path: Path, thread_id: str, config: HistoryConfig) -> Path:
         sortable.append((str(row["created_at"] or ""), 1 + sequence, str(row["id"]), record))
 
     entries.extend(record for _, _, _, record in sorted(sortable))
-    with open(out_path, "w", encoding="utf-8") as fh:
-        for entry in entries:
-            json.dump(entry, fh, ensure_ascii=False, separators=(",", ":"))
-            fh.write("\n")
-    return out_path
+    return entries
+
+
+def _export_is_current(out_path: Path, fingerprint_path: Path, fingerprint: str) -> bool:
+    if out_path.is_symlink() or fingerprint_path.is_symlink():
+        return False
+    try:
+        return out_path.is_file() and fingerprint_path.read_text(encoding="utf-8") == fingerprint
+    except OSError:
+        return False
 
 
 def records_from_db(db_path: Path, config: HistoryConfig) -> list[SessionRecord]:
@@ -237,7 +291,7 @@ def records_from_db(db_path: Path, config: HistoryConfig) -> list[SessionRecord]
                 """
             ).fetchall()
     except sqlite3.Error as error:
-        raise HistoryError(f"Could not read T3 Code history DB {db_path}: {error}") from error
+        raise HistoryStoreError("T3 Code", db_path, error) from error
 
     records: list[SessionRecord] = []
     for row in rows:
@@ -283,8 +337,8 @@ def _sqlite_tables(path: Path) -> set[str]:
     try:
         with closing(_sqlite_ro(path)) as conn:
             rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-    except sqlite3.Error:
-        return set()
+    except sqlite3.Error as error:
+        raise HistoryStoreError("T3 Code", path, error) from error
     return {str(row["name"]) for row in rows}
 
 
@@ -294,10 +348,38 @@ def _safe_filename(value: str) -> str:
 
 
 def _export_path(db_path: Path, thread_id: str, cache_root: Path) -> Path:
-    db_digest = hashlib.sha256(canonical_path(db_path).encode("utf-8")).hexdigest()[:16]
     thread_digest = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
     filename = f"{_safe_filename(thread_id)[:80]}-{thread_digest}.jsonl"
-    return cache_root / "t3code" / db_digest / filename
+    return _export_cache_dir(db_path, cache_root) / filename
+
+
+def _export_cache_dir(db_path: Path, cache_root: Path) -> Path:
+    db_digest = hashlib.sha256(canonical_path(db_path).encode("utf-8")).hexdigest()[:16]
+    return cache_root / "t3code" / db_digest
+
+
+def _export_fingerprint_path(out_path: Path) -> Path:
+    return out_path.with_name(f"{out_path.name}.fingerprint")
+
+
+def _export_lock_path(out_path: Path) -> Path:
+    return out_path.with_name(f"{out_path.name}.lock")
+
+
+def export_fingerprint(db_path: Path) -> str:
+    try:
+        status = db_path.stat()
+    except OSError as error:
+        raise HistoryError(f"Could not fingerprint T3 Code database {db_path}: {error}") from error
+    return json.dumps(
+        {
+            "export_version": _EXPORT_VERSION,
+            "mtime_ns": status.st_mtime_ns,
+            "size": status.st_size,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _ref(db_path: Path, thread_id: str) -> str:
@@ -322,25 +404,42 @@ def _model_label(provider: str | None, model: str | None) -> str | None:
 
 def _provider_log_paths(db_path: Path, thread_id: str) -> list[Path]:
     logs_dir = db_path.parent / "logs" / "provider"
-    if not logs_dir.is_dir():
+    if not logs_dir.exists():
         return []
-    paths = [path for path in logs_dir.glob(f"{thread_id}.log*") if path.is_file()]
-    return sorted(paths, key=lambda path: (path.stat().st_mtime, str(path)))
+    if not logs_dir.is_dir():
+        warn(logs_dir, "expected a directory")
+        return []
+    try:
+        paths = [path for path in logs_dir.glob(f"{thread_id}.log*") if path.is_file()]
+        return sorted(paths, key=lambda path: (path.stat().st_mtime, str(path)))
+    except OSError as error:
+        warn(logs_dir, error)
+        return []
 
 
 def _iter_log_events(db_path: Path, thread_id: str) -> Iterator[dict[str, Any]]:
     for log_path in _provider_log_paths(db_path, thread_id):
+        warned = False
         try:
             with open(log_path, encoding="utf-8") as fh:
-                for line in fh:
+                for line_number, line in enumerate(fh, start=1):
                     match = _LOG_LINE_RE.match(line)
                     if not match:
                         continue
-                    value = json.loads(match.group(1))
+                    try:
+                        value = json.loads(match.group(1))
+                    except (ValueError, TypeError) as error:
+                        if not warned:
+                            warn(
+                                f"{log_path}:{line_number}",
+                                f"malformed JSON record: {error}",
+                            )
+                            warned = True
+                        continue
                     if isinstance(value, dict):
                         yield value
-        except (OSError, ValueError, TypeError):
-            continue
+        except OSError as error:
+            warn(log_path, error)
 
 
 def _codex_rollout_path(db_path: Path, thread_id: str, config: HistoryConfig) -> Path | None:

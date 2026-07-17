@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import time
 from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
 from ..config import HistoryConfig
-from ..errors import HistoryError
+from ..errors import HistoryError, warn, warn_malformed_json_record
 from ..models import Harness, SessionRecord
 
 
@@ -61,16 +64,21 @@ def instant_bounds(values: Iterable[object]) -> tuple[str | None, str | None]:
 def snapshot_records(path: str | Path) -> Iterator[dict[str, object]]:
     with open(path, "rb") as fh:
         remaining = os.fstat(fh.fileno()).st_size
+        line_number = 0
         while remaining > 0:
             raw_line = fh.readline(remaining)
             if not raw_line:
                 break
             remaining -= len(raw_line)
+            line_number += 1
             if not raw_line.strip():
                 continue
             try:
                 value = json.loads(raw_line)
-            except (UnicodeDecodeError, json.JSONDecodeError):
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                if not raw_line.endswith((b"\n", b"\r")) and remaining == 0:
+                    continue
+                warn_malformed_json_record(path, line_number, error)
                 continue
             if isinstance(value, dict):
                 yield value
@@ -113,6 +121,41 @@ def ensure_private_cache_path(cache_root: Path, target: Path) -> None:
             raise HistoryError(
                 f"Could not prepare private VCC cache directory {directory}: {error}"
             ) from error
+
+
+@contextmanager
+def exclusive_cache_lock(lock_path: Path, timeout: float = 5.0) -> Iterator[bool]:
+    """Acquire a bounded exclusive cache lock, yielding whether it succeeded."""
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+        os.fchmod(descriptor, 0o600)
+    except OSError as error:
+        raise HistoryError(f"Could not open VCC cache lock {lock_path}: {error}") from error
+
+    acquired = False
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    warn(
+                        lock_path,
+                        "timed out waiting for cache lock; continuing without it",
+                    )
+                    break
+                time.sleep(0.05)
+        yield acquired
+    finally:
+        if acquired:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 class ExactCwdMixin:
