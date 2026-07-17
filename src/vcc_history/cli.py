@@ -10,7 +10,7 @@ import click
 from .history.errors import HistoryError
 from .history.models import HarnessFilter, SearchHit, SessionRecord
 from .history.refs import read_ref
-from .history.registry import DESCRIPTORS, HARNESS_CHOICES
+from .history.registry import DESCRIPTORS, HARNESS_CHOICES, HARNESS_IDS
 from .history.service import collect_sessions, compile_session, filter_sessions, search_sessions
 
 _HARNESS_LABELS = ", ".join(descriptor.label for descriptor in DESCRIPTORS[:-1])
@@ -104,15 +104,26 @@ def search(
 @main.command("compile")
 @click.argument("inputs", nargs=-1, required=True, type=click.Path(path_type=str))
 @click.option("-o", "--output-dir", type=click.Path(path_type=str))
+@click.option("--harness", type=click.Choice(HARNESS_IDS), help="Override session format detection.")
 @click.option("--all-threads", is_flag=True, help="Compile every thread in a T3 Code database.")
-def compile_cmd(inputs: tuple[str, ...], output_dir: str | None, all_threads: bool) -> None:
+def compile_cmd(
+    inputs: tuple[str, ...],
+    output_dir: str | None,
+    harness: str | None,
+    all_threads: bool,
+) -> None:
     """Compile one or more session files."""
     if all_threads and output_dir is None:
         raise click.UsageError("--all-threads requires -o/--output-dir.")
     try:
         for input_path in inputs:
-            compile_session(input_path, output_dir=output_dir, all_threads=all_threads)
-    except HistoryError as error:
+            compile_session(
+                input_path,
+                output_dir=output_dir,
+                all_threads=all_threads,
+                harness=harness,
+            )
+    except (HistoryError, ValueError) as error:
         raise click.ClickException(str(error)) from error
 
 

@@ -19,7 +19,8 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from vcc_history.cli import main
-from vcc_history.history import service
+from vcc_history.history import service, vcc
+from vcc_history.history.errors import HistoryError
 from vcc_history.history.refs import read_ref
 from vcc_history.history.registry import DESCRIPTORS, HARNESS_CHOICES, HARNESS_IDS
 from vcc_history.history.sources.base import file_alias_keys, finalize_record
@@ -578,6 +579,89 @@ class XccTests(unittest.TestCase):
         self.assertNotEqual(first_compiled.parent, second_compiled.parent)
         self.assertIn("sanitized Claude fixture marker", read_ref(by_session[str(second_session)]["ref"]))
 
+    def test_compile_unknown_format_errors_with_harness_guidance(self):
+        source = self.root / "unknown.jsonl"
+        source.write_text('{"unexpected":"record"}\n', encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["compile", str(source)])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("could not detect session harness", result.output)
+        self.assertIn("--harness", result.output)
+        for harness in HARNESS_IDS:
+            self.assertIn(harness, result.output)
+        self.assertFalse(source.with_suffix(".txt").exists())
+
+    def test_compile_harness_override_forces_claude_on_ambiguous_input(self):
+        source = self.root / "ambiguous.jsonl"
+        source.write_text(
+            "\n".join(
+                [
+                    '{"role":"user","content":"reasonix poison"}',
+                    '{"type":"user","sessionId":"ambiguous","message":'
+                    '{"role":"user","content":"forced Claude marker"}}',
+                    '{"type":"assistant","sessionId":"ambiguous","message":'
+                    '{"role":"assistant","content":[{"type":"text",'
+                    '"text":"forced Claude response"}]}}',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(vcc.detect_format(vcc.lex(source)), "reasonix")
+
+        result = CliRunner().invoke(
+            main,
+            ["compile", "--harness", "claude", "-o", str(self.root), str(source)],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        full = source.with_suffix(".txt").read_text(encoding="utf-8")
+        self.assertIn("forced Claude marker", full)
+        self.assertIn("forced Claude response", full)
+        self.assertNotIn("reasonix poison", full)
+
+    def test_known_session_harness_bypasses_detection_for_compile_and_search(self):
+        source = self.claude_project / "poisoned.jsonl"
+        source.write_text(
+            "\n".join(
+                [
+                    '{"role":"user","content":"reasonix poison"}',
+                    '{"type":"user","sessionId":"poisoned","cwd":"/tmp/poisoned",'
+                    '"timestamp":"2026-07-17T00:00:00Z","message":{"role":"user",'
+                    '"content":"threaded harness marker"}}',
+                    '{"type":"assistant","sessionId":"poisoned","cwd":"/tmp/poisoned",'
+                    '"timestamp":"2026-07-17T00:00:01Z","message":{"role":"assistant",'
+                    '"content":[{"type":"text","text":"threaded harness response"}]}}',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        record = next(
+            record
+            for record in service.collect_sessions("claude")
+            if record["path"] == str(source)
+        )
+        self.assertEqual(vcc.detect_format(vcc.lex(source)), "reasonix")
+
+        with mock.patch.object(
+            vcc,
+            "detect_format",
+            side_effect=AssertionError("known harness must bypass detection"),
+        ):
+            compiled = service.compile_session(
+                record["path"],
+                output_dir=str(self.root / "known-compile"),
+                harness=record["harness"],
+            )
+            hits = service.search_sessions([record], re.compile("threaded harness marker"))
+
+        full = Path(compiled[0][0]).read_text(encoding="utf-8")
+        self.assertIn("threaded harness marker", full)
+        self.assertTrue(hits)
+        self.assertTrue(any("threaded harness marker" in line for line in hits[0]["lines"]))
+
     def test_explicit_claude_compile_still_writes_beside_source(self):
         result = CliRunner().invoke(main, ["compile", str(self.claude_session)])
 
@@ -693,6 +777,13 @@ class XccTests(unittest.TestCase):
         second = _export_path(db_path, "a-b", cache_root)
 
         self.assertNotEqual(first, second)
+
+    def test_t3code_thread_ref_rejects_a_mismatched_harness(self):
+        with self.assertRaisesRegex(HistoryError, "require harness 't3code'"):
+            service.compile_session(
+                "t3code:/tmp/state.sqlite#thread-1",
+                harness="codex",
+            )
 
     def test_t3code_sqlite_threads_are_discovered_and_searchable(self):
         db_path = self.t3_home / "userdata" / "state.sqlite"
@@ -900,6 +991,20 @@ class XccTests(unittest.TestCase):
                 ),
             )
 
+        provider_log = db_path.parent / "logs" / "provider" / "thread-1.log"
+        provider_log.parent.mkdir(parents=True)
+        provider_log.write_text(
+            "[fixture] NTIVE: "
+            + json.dumps(
+                {
+                    "provider": "codex",
+                    "payload": {"thread": {"path": str(self.codex_session)}},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
         guarded = CliRunner().invoke(main, ["compile", str(db_path)])
         self.assertNotEqual(guarded.exit_code, 0)
         self.assertIn("state.sqlite contains many threads", guarded.output)
@@ -926,6 +1031,11 @@ class XccTests(unittest.TestCase):
         records = service.collect_sessions("t3code")
         self.assertEqual(len(records), 2)
         self.assertEqual(records[0]["harness"], "t3code")
+        self.assertTrue(records[0]["path"].startswith("t3code:"))
+        self.assertIn(
+            f"path:{self.codex_session.resolve()}",
+            records[0]["alias_keys"],
+        )
         self.assertEqual(records[0]["cwd"], "/tmp/t3-project")
         self.assertEqual(records[0]["created_at"], "2026-06-23T01:00:00Z")
         self.assertEqual(records[0]["updated_at"], "2026-06-23T01:00:04Z")

@@ -11,11 +11,13 @@ def compile_pass(
     output_dir: str | None = None,
     grep_pattern: object | None = None,
     quiet: bool = False,
+    harness: str | None = None,
 ) -> list[tuple[str, list[dict[str, object]]]]:
     result = vcc.compile_pass(
         path,
         output_dir=output_dir,
         grep_pattern=grep_pattern,
         quiet=quiet,
+        harness=harness,
     )
     return cast(list[tuple[str, list[dict[str, object]]]], result)

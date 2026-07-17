@@ -13,40 +13,22 @@ Usage:
   xcc search "kw" --harness all
 """
 
-import base64
 import json
 import os
 import re
 import sys
-from typing import Any
 
-# ── dict emitter ──
-
-def _emit_dict(data, indent=0):
-    parts = []
-    prefix = " " * indent
-    for k, v in data.items():
-        if isinstance(v, dict):
-            parts.append(prefix + k + ":")
-            parts.append(_emit_dict(v, indent + 2))
-        elif isinstance(v, list):
-            parts.append(prefix + k + ":")
-            for item in v:
-                if isinstance(item, dict):
-                    parts.append(prefix + "  -")
-                    parts.append(_emit_dict(item, indent + 4))
-                else:
-                    parts.append(prefix + "  - " + str(item))
-        else:
-            s = str(v)
-            if "\n" in s:
-                parts.append(prefix + k + ": |")
-                p = " " * (indent + 2)
-                for line in s.split("\n"):
-                    parts.append((p + line) if line else "")
-            else:
-                parts.append(prefix + k + ": " + s)
-    return "\n".join(parts)
+from .events import Conversation
+from .frontends.claude import parse_events as parse_claude_events
+from .frontends.claude import split_record_segments as split_claude_record_segments
+from .frontends.codex import parse_events as parse_codex_events
+from .frontends.codex import split_record_segments as split_codex_record_segments
+from .frontends.omp import parse_events as parse_omp_events
+from .frontends.omp import split_record_segments as split_omp_record_segments
+from .frontends.reasonix import parse_events as parse_reasonix_events
+from .frontends.t3code import parse_events as parse_t3code_events
+from .registry import HARNESS_IDS
+from .render import SEP, render as render_conversation
 
 # ── tokenizer ──
 
@@ -56,8 +38,6 @@ _TOK_RE = re.compile(
     r'|[^\sa-zA-Z0-9]'     # single char: any non-whitespace non-letter non-digit
     r'|\s+'                # whitespace (preserved, not counted)
 )
-_ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-_CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 _DATA_URL_RE = re.compile(r"data:([A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]{256,})")
 _LONG_B64_RE = re.compile(r"(?<![A-Za-z0-9+/=])([A-Za-z0-9+/=]{1024,})(?![A-Za-z0-9+/=])")
 
@@ -135,16 +115,10 @@ def match_lines(lines, regex, ref_fn="x.txt", start_line=1):
 
 # ── lexer ──
 
-SEP = "══════════════════════════════"
-_DISCARD_T = {"queue-operation", "file-history-snapshot", "last-prompt", "progress"}
-_DISCARD_S = {"stop_hook_summary", "api_error", "bridge_status", "informational", "local_command"}
-
 def _short(fn):
     n, e = os.path.splitext(fn)
     return ("#" + n[-6:] + e) if len(n) > 12 else fn
 
-def _short_tid(tid):
-    return tid[-6:] if len(tid) > 6 else tid
 
 def lex(path):
     records = []
@@ -187,7 +161,7 @@ def detect_format(recs):
             return "reasonix"
         if rt in {"assistant", "user", "system"}:
             return "claude"
-    return "claude"
+    return None
 
 
 def _collect_stats(chain):
@@ -277,1242 +251,6 @@ def _collect_stats(chain):
         lines.append(f"  {_fmt_block('total', all_raw, all_eff)}")
     return lines
 
-def _sanitize(text):
-    if not text:
-        return text
-    if "\r" in text:
-        text = text.replace("\r", "")
-    if "\x1b" in text:
-        text = _ANSI_RE.sub("", text)
-    return _CTRL_RE.sub("", text)
-
-def _preprocess_tool_text(text, tool_name):
-    text = _sanitize(text)
-    if tool_name != "Read":
-        return text
-    lines = []
-    for line in text.split("\n"):
-        if "→" in line:
-            head, tail = line.split("→", 1)
-            if head.strip().isdigit():
-                line = tail
-        lines.append(line)
-    return "\n".join(lines)
-
-def _discard(r):
-    t = r.get("type")
-    return t in _DISCARD_T or (t == "system" and r.get("subtype") in _DISCARD_S)
-
-def merge_chunks(recs):
-    merged = []
-    active_mid = None
-    active_idx = None
-    for r in recs:
-        if r.get("type") == "assistant":
-            m = r.get("message", {})
-            mid = m.get("id")
-            if mid and mid == active_mid and active_idx is not None:
-                merged[active_idx]["message"]["content"].extend(m.get("content", []))
-                if m.get("stop_reason"):
-                    merged[active_idx]["message"]["stop_reason"] = m["stop_reason"]
-            else:
-                merged.append(r)
-                if mid:
-                    active_mid = mid
-                    active_idx = len(merged) - 1
-                else:
-                    active_mid = None
-                    active_idx = None
-        else:
-            merged.append(r)
-            if not _discard(r):
-                active_mid = None
-                active_idx = None
-    return merged
-
-def split_chains(recs):
-    kept = [r for r in recs if not _discard(r)]
-    chains, cur = [], []
-    for r in kept:
-        if r.get("type") == "system" and r.get("subtype") == "compact_boundary":
-            if cur: chains.append(cur)
-            cur = []
-        else:
-            cur.append(r)
-    if cur: chains.append(cur)
-    return chains
-
-
-def split_codex_chains(recs):
-    chains = []
-    cur = []
-    for r in recs:
-        rt = r.get("type")
-        if rt == "compacted":
-            if cur:
-                chains.append(cur)
-            cur = []
-            continue
-        if rt == "event_msg" and r.get("payload", {}).get("type") == "context_compacted":
-            continue
-        cur.append(r)
-    if cur:
-        chains.append(cur)
-    return chains
-
-
-def split_omp_chains(recs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    chains = []
-    cur = []
-    for r in recs:
-        if r.get("type") == "compaction":
-            if cur:
-                chains.append(cur)
-            cur = [r]
-            continue
-        cur.append(r)
-    if cur:
-        chains.append(cur)
-    return chains
-
-
-def split_t3code_chains(recs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    return [recs] if recs else []
-
-# ── image / doc ──
-
-def _media_ext(media_type, default_ext):
-    if "/" not in media_type:
-        return default_ext
-    ext = media_type.split("/", 1)[1].split("+", 1)[0]
-    if ext == "jpeg":
-        return "jpg"
-    return ext or default_ext
-
-def _extract_base64(source, outdir, data_prefix, data_index, stem, default_mt, default_ext):
-    mt = source.get("media_type", default_mt)
-    fn = f"{data_prefix}_{stem}_{data_index}.{_media_ext(mt, default_ext)}"
-    with open(os.path.join(outdir, fn), "wb") as f:
-        f.write(base64.b64decode(source.get("data", "")))
-    return fn
-
-def _extract_img(source, outdir, data_prefix, data_index):
-    return _extract_base64(source, outdir, data_prefix, data_index,
-                           "img", "image/png", "png")
-
-def _extract_doc(source, outdir, data_prefix, data_index):
-    return _extract_base64(source, outdir, data_prefix, data_index,
-                           "doc", "application/octet-stream", "bin")
-
-
-# ── tool_call summary ──
-
-_TOOL_SUMMARY_FIELDS = {
-    "Read": "file_path", "Edit": "file_path", "Write": "file_path",
-    "Glob": "pattern", "Grep": "pattern",
-    "Agent": "description", "Skill": "skill",
-    "read": "path", "edit": "path", "write": "path",
-    "find": "pattern", "search": "pattern", "web_search": "query",
-    "task": "description", "skill": "skill",
-    "exec_command": "cmd", "write_stdin": "chars",
-    "spawn_agent": "message", "send_input": "message",
-    "wait_agent": "target", "close_agent": "target",
-    "view_image": "path", "request_user_input": "questions",
-    "read_file": "path", "write_file": "path", "edit_file": "path",
-    "multi_edit": "path", "list_files": "path", "grep": "pattern",
-}
-
-def _tool_summary(name, inp):
-    """Build one-line summary: * Name "param" """
-    field = _TOOL_SUMMARY_FIELDS.get(name)
-    if field and field in inp:
-        return f'* {name} "{inp[field]}"'
-    if name == "Bash":
-        val = inp.get("description") or inp.get("command", "")
-        if val:
-            # truncate long commands
-            if not inp.get("description") and len(val) > 60:
-                val = val[:57] + "..."
-            return f'* {name} "{val}"'
-    if name == "bash":
-        val = inp.get("description") or inp.get("command", "")
-        if val:
-            if not inp.get("description") and len(val) > 60:
-                val = val[:57] + "..."
-            return f'* {name} "{val}"'
-    return f"* {name}"
-
-
-# ── IR node ──
-
-def _node(typ, content, **kw):
-    o = {"type": typ, "content": content,
-         "searchable": kw.pop("searchable", False)}
-    o.update(kw)
-    return o
-
-# ── parser ──
-
-def parse(chain, outdir, data_prefix, data_ctr):
-    ir = []
-    sec = 0
-    blk = 0
-
-    tid_name = {}
-    for r in chain:
-        if r.get("type") == "assistant":
-            for b in r.get("message", {}).get("content", []):
-                if b.get("type") == "tool_use":
-                    tid_name[b.get("id", "")] = b.get("name", "unknown")
-
-    def _emit_sep():
-        if sec > 0:
-            ir.append(_node("meta", ["", SEP]))
-
-    def _emit_header(h, **kw):
-        ir.append(_node("meta_header", [h, ""], _sec=sec, **kw))
-
-    def _emit_blocks(blocks, text_type):
-        nonlocal blk
-        has_any = False
-        for b in blocks:
-            bt = b.get("type")
-            if bt == "thinking":
-                txt = _sanitize(b.get("thinking", ""))
-                if not txt: continue
-                ir.append(_node("meta", [">>>thinking"], _sec=sec, _blk=blk))
-                ir.append(_node("thinking", txt.split("\n"), searchable=True,
-                                 _sec=sec, _blk=blk))
-                ir.append(_node("meta", ["<<<thinking"], _sec=sec, _blk=blk))
-                blk += 1; has_any = True
-
-            elif bt == "redacted_thinking":
-                ir.append(_node("meta", [">>>redacted_thinking"], _sec=sec, _blk=blk))
-                ir.append(_node("redacted_thinking",
-                                 ["[content redacted by model provider]"],
-                                 searchable=True, _sec=sec, _blk=blk))
-                ir.append(_node("meta", ["<<<redacted_thinking"], _sec=sec, _blk=blk))
-                blk += 1; has_any = True
-
-            elif bt == "text":
-                txt = _sanitize(b.get("text", ""))
-                if not txt: continue
-                ir.append(_node(text_type, txt.split("\n"), searchable=True,
-                                 _sec=sec, _blk=blk))
-                blk += 1; has_any = True
-
-            elif bt == "tool_use":
-                name = b.get("name", "unknown")
-                tid = b.get("id", "")
-                inp = b.get("input", {})
-                hl = f">>>tool_call {name}:{_short_tid(tid)}"
-                summary = _tool_summary(name, inp)
-                ir.append(_node("meta", [hl], _sec=sec, _blk=blk,
-                                 _tool_summary=summary, _tid=tid))
-                if inp:
-                    ir.append(_node("tool_call", _emit_dict(inp).split("\n"),
-                                     searchable=True, _sec=sec, _blk=blk))
-                ir.append(_node("meta", ["<<<tool_call"], _sec=sec, _blk=blk))
-                blk += 1; has_any = True
-
-            elif bt == "image":
-                src = b.get("source", {})
-                if src.get("type") == "base64":
-                    fn = _extract_img(src, outdir, data_prefix, data_ctr[0])
-                    data_ctr[0] += 1
-                    ir.append(_node(f"{text_type}_image", [f"[image: {fn}]"],
-                                     searchable=True, _sec=sec, _blk=blk))
-                    blk += 1; has_any = True
-
-            elif bt == "document":
-                src = b.get("source", {})
-                label = "[document]"
-                if src.get("type") == "base64":
-                    fn = _extract_doc(src, outdir, data_prefix, data_ctr[0])
-                    data_ctr[0] += 1
-                    label = f"[document: {fn}]"
-                ir.append(_node(f"{text_type}_document", [label],
-                                 searchable=True, _sec=sec, _blk=blk))
-                blk += 1; has_any = True
-        return has_any
-
-    for r in chain:
-        rt = r.get("type")
-
-        if rt == "system":
-            if r.get("subtype") == "compact_boundary": continue
-            content = r.get("content", "") or r.get("message", {}).get("content", "")
-            if not content: continue
-            _emit_sep(); _emit_header("[system]")
-            if isinstance(content, list):
-                _emit_blocks(content, "system")
-            else:
-                ir.append(_node("system", _sanitize(content).split("\n"), searchable=True,
-                                 _sec=sec, _blk=blk))
-                blk += 1
-            sec += 1
-
-        elif rt == "user":
-            if r.get("isCompactSummary"):
-                content = r.get("message", {}).get("content", "")
-                nlines = content.count("\n") + 1 if content else 0
-                _emit_sep(); _emit_header("[user]")
-                ir.append(_node("user", [f"[compact summary — {nlines} lines]"], searchable=False,
-                                 _sec=sec, _blk=blk))
-                blk += 1; sec += 1
-                continue
-            content = r.get("message", {}).get("content", "")
-            if isinstance(content, str):
-                if content:
-                    _emit_sep(); _emit_header("[user]")
-                    ir.append(_node("user", _sanitize(content).split("\n"), searchable=True,
-                                     _sec=sec, _blk=blk))
-                    blk += 1; sec += 1
-            elif isinstance(content, list):
-                tblocks = [b for b in content if b.get("type") != "tool_result"]
-                tresults = [b for b in content if b.get("type") == "tool_result"]
-                if tblocks:
-                    mark = len(ir)
-                    saved_data = data_ctr[0]
-                    saved_blk = blk
-                    _emit_sep(); _emit_header("[user]")
-                    if _emit_blocks(tblocks, "user"):
-                        sec += 1
-                    else:
-                        del ir[mark:]
-                        data_ctr[0] = saved_data
-                        blk = saved_blk
-                for tr in tresults:
-                    tuid = tr.get("tool_use_id", "")
-                    is_err = tr.get("is_error", False)
-                    nm = tid_name.get(tuid, "unknown")
-                    role = "tool_error" if is_err else "tool"
-                    btype = "tool_error" if is_err else "tool_result"
-                    _emit_sep(); _emit_header(f"[{role}] {nm}:{_short_tid(tuid)}", _tid=tuid)
-                    tc = tr.get("content", "")
-                    parts = []
-                    if isinstance(tc, str):
-                        parts.append(_preprocess_tool_text(tc, nm))
-                    elif isinstance(tc, list):
-                        for item in tc:
-                            if item.get("type") == "text":
-                                parts.append(_preprocess_tool_text(item.get("text", ""), nm))
-                            elif item.get("type") == "image":
-                                src = item.get("source", {})
-                                if src.get("type") == "base64":
-                                    fn = _extract_img(src, outdir, data_prefix, data_ctr[0])
-                                    data_ctr[0] += 1
-                                    parts.append(f"[image: {fn}]")
-                            elif item.get("type") == "document":
-                                src = item.get("source", {})
-                                if src.get("type") == "base64":
-                                    fn = _extract_doc(src, outdir, data_prefix, data_ctr[0])
-                                    data_ctr[0] += 1
-                                    parts.append(f"[document: {fn}]")
-                    ir.append(_node(btype, _sanitize("\n\n".join(parts)).split("\n"),
-                                     searchable=True, _sec=sec, _blk=blk))
-                    blk += 1; sec += 1
-
-        elif rt == "assistant":
-            blocks = r.get("message", {}).get("content", [])
-            has = any(
-                (b.get("type") == "thinking" and b.get("thinking")) or
-                b.get("type") == "redacted_thinking" or
-                (b.get("type") == "text" and b.get("text")) or
-                b.get("type") == "tool_use" or
-                b.get("type") == "image" or
-                b.get("type") == "document"
-                for b in blocks)
-            if has:
-                _emit_sep(); _emit_header("[assistant]")
-                _emit_blocks(blocks, "assistant")
-                sec += 1
-
-    ir.append(_node("meta", [""]))  # trailing newline
-    return ir
-
-
-def _render_json_lines(value):
-    return json.dumps(value, ensure_ascii=False, indent=2).split("\n")
-
-
-def _maybe_json_string(value):
-    if not isinstance(value, str):
-        return None
-    value = value.strip()
-    if not value:
-        return None
-    try:
-        return json.loads(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _structured_lines(value):
-    if value in (None, "", {}, []):
-        return []
-    if isinstance(value, dict):
-        return _emit_dict(value).split("\n")
-    if isinstance(value, list):
-        return _render_json_lines(value)
-    parsed = _maybe_json_string(value)
-    if isinstance(parsed, dict):
-        return _emit_dict(parsed).split("\n")
-    if isinstance(parsed, list):
-        return _render_json_lines(parsed)
-    return _sanitize(str(value)).split("\n")
-
-
-def _codex_content_label(item):
-    item_type = item.get("type", "content")
-    if item_type in {"input_image", "output_image", "image"}:
-        return "[image]"
-    if item_type in {"input_file", "output_file", "file", "document"}:
-        return "[document]"
-    return f"[{item_type}]"
-
-
-def _codex_message_lines(content):
-    parts = []
-    for item in content or []:
-        item_type = item.get("type")
-        if item_type in {"input_text", "output_text", "text"}:
-            text = _sanitize(item.get("text", ""))
-            if text:
-                parts.append(text)
-            continue
-        if item_type == "refusal":
-            text = _sanitize(item.get("refusal", ""))
-            if text:
-                parts.append(text)
-            continue
-        text = item.get("text")
-        if isinstance(text, str) and text.strip():
-            parts.append(_sanitize(text))
-            continue
-        parts.append(_codex_content_label(item))
-    if not parts:
-        return []
-    return _sanitize("\n\n".join(parts)).split("\n")
-
-
-def _codex_tool_call_name(payload):
-    pt = payload.get("type")
-    if pt == "function_call":
-        return payload.get("name", "unknown")
-    if pt == "custom_tool_call":
-        return (
-            payload.get("name")
-            or payload.get("call_name")
-            or payload.get("raw_name")
-            or "custom_tool"
-        )
-    if pt == "web_search_call":
-        return "web_search"
-    if pt == "image_generation_call":
-        return "image_generation"
-    if pt == "local_shell_call":
-        return "local_shell"
-    if pt == "tool_search_call":
-        return "tool_search"
-    return payload.get("name", pt or "unknown")
-
-
-def _codex_tool_call_id(payload):
-    return (
-        payload.get("call_id")
-        or payload.get("id")
-        or payload.get("tool_call_id")
-        or ""
-    )
-
-
-def _codex_tool_input(payload):
-    pt = payload.get("type")
-    if pt == "function_call":
-        parsed = _maybe_json_string(payload.get("arguments"))
-        if isinstance(parsed, dict):
-            return parsed
-        raw = payload.get("arguments")
-        return {"arguments": raw} if raw else {}
-    if pt == "custom_tool_call":
-        if isinstance(payload.get("input"), dict):
-            return payload.get("input")
-        parsed = _maybe_json_string(payload.get("input"))
-        if isinstance(parsed, dict):
-            return parsed
-        raw = payload.get("input")
-        return {"input": raw} if raw else {}
-    if pt == "web_search_call":
-        query = payload.get("query")
-        if query:
-            return {"query": query}
-        return {}
-    if pt == "image_generation_call":
-        prompt = payload.get("prompt") or payload.get("revised_prompt")
-        if prompt:
-            return {"prompt": prompt}
-        return {}
-    if pt == "local_shell_call":
-        command = payload.get("command")
-        if command:
-            return {"command": command}
-        return {}
-    if pt == "tool_search_call":
-        query = payload.get("query")
-        if query:
-            return {"query": query}
-        return {}
-    return {}
-
-
-def _codex_tool_output_lines(payload):
-    pt = payload.get("type")
-    if pt in {"function_call_output", "custom_tool_call_output"}:
-        return _structured_lines(payload.get("output"))
-    if pt == "tool_search_output":
-        return _structured_lines(payload.get("output"))
-    return []
-
-
-def parse_codex(chain, outdir, data_prefix, data_ctr):
-    del outdir, data_prefix, data_ctr
-    ir = []
-    sec = 0
-    blk = 0
-
-    call_names = {}
-    for r in chain:
-        if r.get("type") != "response_item":
-            continue
-        payload = r.get("payload", {})
-        pt = payload.get("type")
-        if pt in {
-            "function_call",
-            "custom_tool_call",
-            "web_search_call",
-            "image_generation_call",
-            "local_shell_call",
-            "tool_search_call",
-        }:
-            call_id = _codex_tool_call_id(payload)
-            if call_id:
-                call_names[call_id] = _codex_tool_call_name(payload)
-
-    def _emit_sep():
-        if sec > 0:
-            ir.append(_node("meta", ["", SEP]))
-
-    def _emit_header(h, **kw):
-        ir.append(_node("meta_header", [h, ""], _sec=sec, **kw))
-
-    for r in chain:
-        rt = r.get("type")
-        if rt in {"session_meta", "turn_context", "compacted"}:
-            continue
-
-        if rt == "response_item":
-            payload = r.get("payload", {})
-            pt = payload.get("type")
-
-            if pt == "reasoning":
-                continue
-
-            if pt == "message":
-                role = payload.get("role")
-                lines = _codex_message_lines(payload.get("content", []))
-                if not lines:
-                    continue
-                if role == "developer":
-                    label = "[system]"
-                    node_type = "system"
-                elif role == "user":
-                    label = "[user]"
-                    node_type = "user"
-                else:
-                    label = "[assistant]"
-                    node_type = "assistant"
-                _emit_sep()
-                _emit_header(label)
-                ir.append(_node(node_type, lines, searchable=True, _sec=sec, _blk=blk))
-                blk += 1
-                sec += 1
-                continue
-
-            if pt in {
-                "function_call",
-                "custom_tool_call",
-                "web_search_call",
-                "image_generation_call",
-                "local_shell_call",
-                "tool_search_call",
-            }:
-                name = _codex_tool_call_name(payload)
-                call_id = _codex_tool_call_id(payload)
-                tool_input = _codex_tool_input(payload)
-                summary = _tool_summary(name, tool_input)
-                _emit_sep()
-                _emit_header("[assistant]")
-                ir.append(
-                    _node(
-                        "meta",
-                        [f">>>tool_call {name}:{_short_tid(call_id)}"],
-                        _sec=sec,
-                        _blk=blk,
-                        _tool_summary=summary,
-                        _tid=call_id,
-                    )
-                )
-                lines = _structured_lines(tool_input)
-                if lines:
-                    ir.append(
-                        _node("tool_call", lines, searchable=True, _sec=sec, _blk=blk)
-                    )
-                ir.append(_node("meta", ["<<<tool_call"], _sec=sec, _blk=blk))
-                blk += 1
-                sec += 1
-                continue
-
-            if pt in {"function_call_output", "custom_tool_call_output", "tool_search_output"}:
-                call_id = payload.get("call_id", "")
-                name = call_names.get(call_id, "unknown")
-                lines = _codex_tool_output_lines(payload)
-                if not lines:
-                    continue
-                _emit_sep()
-                _emit_header(f"[tool] {name}:{_short_tid(call_id)}", _tid=call_id)
-                ir.append(
-                    _node("tool_result", lines, searchable=True, _sec=sec, _blk=blk)
-                )
-                blk += 1
-                sec += 1
-                continue
-
-            continue
-
-        if rt == "event_msg":
-            payload = r.get("payload", {})
-            et = payload.get("type")
-            if et == "web_search_end":
-                call_id = payload.get("call_id", "")
-                lines = _structured_lines(
-                    {
-                        "query": payload.get("query", ""),
-                        "action": payload.get("action"),
-                    }
-                )
-                if not lines:
-                    continue
-                _emit_sep()
-                _emit_header(f"[tool] web_search:{_short_tid(call_id)}", _tid=call_id)
-                ir.append(
-                    _node("tool_result", lines, searchable=True, _sec=sec, _blk=blk)
-                )
-                blk += 1
-                sec += 1
-
-    ir.append(_node("meta", [""]))
-    return ir
-
-
-def _omp_content_lines(content: object) -> list[str]:
-    if isinstance(content, str):
-        text = _sanitize(content)
-        return text.split("\n") if text else []
-    if not isinstance(content, list):
-        return []
-    parts = []
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        item_type = item.get("type")
-        if item_type == "text":
-            text = _sanitize(item.get("text", ""))
-            if text:
-                parts.append(text)
-        elif item_type == "image":
-            parts.append("[image]")
-        elif item_type in {"document", "file"}:
-            parts.append("[document]")
-        elif isinstance(item.get("text"), str):
-            parts.append(_sanitize(item.get("text")))
-        elif item_type:
-            parts.append(f"[{item_type}]")
-    if not parts:
-        return []
-    return _sanitize("\n\n".join(parts)).split("\n")
-
-
-def _omp_tool_result_lines(message: dict[str, Any]) -> list[str]:
-    lines = _omp_content_lines(message.get("content"))
-    details = message.get("details")
-    if isinstance(details, dict) and details:
-        detail_lines = _structured_lines(details)
-        if lines:
-            return lines + ["", "details:"] + [f"  {line}" for line in detail_lines]
-        return detail_lines
-    return lines
-
-
-def _omp_custom_lines(message: dict[str, Any]) -> list[str]:
-    custom_type = message.get("customType") or message.get("role") or "custom"
-    lines = _omp_content_lines(message.get("content"))
-    details = message.get("details")
-    if isinstance(details, dict) and details:
-        detail_lines = _structured_lines(details)
-        if lines:
-            return lines + ["", "details:"] + [f"  {line}" for line in detail_lines]
-        return detail_lines
-    return lines or [f"[{custom_type}]"]
-
-
-def _omp_file_mention_lines(message: dict[str, Any]) -> list[str]:
-    lines = []
-    for item in message.get("files") or []:
-        if not isinstance(item, dict):
-            continue
-        path = item.get("path") or "(unknown)"
-        lines.append(f"<file path=\"{path}\">")
-        content = item.get("content")
-        if isinstance(content, str) and content:
-            lines.extend(_sanitize(content).split("\n"))
-        elif item.get("image"):
-            lines.append("[image]")
-        lines.append("</file>")
-    return lines
-
-
-def _omp_execution_lines(message: dict[str, Any], source_key: str) -> list[str]:
-    source = message.get(source_key) or ""
-    output = message.get("output") or ""
-    lines = []
-    if source:
-        lines.append(f"{source_key}: |")
-        lines.extend(f"  {line}" for line in _sanitize(source).split("\n"))
-    if "exitCode" in message:
-        lines.append(f"exit_code: {message.get('exitCode')}")
-    if message.get("cancelled"):
-        lines.append("cancelled: true")
-    if output:
-        lines.append("output: |")
-        lines.extend(f"  {line}" for line in _sanitize(output).split("\n"))
-    return lines
-
-
-def _omp_session_init_lines(entry: dict[str, Any]) -> list[str]:
-    lines = []
-    system_prompt = entry.get("systemPrompt")
-    task = entry.get("task")
-    tools = entry.get("tools")
-    if isinstance(system_prompt, str) and system_prompt:
-        lines.append("system_prompt: |")
-        lines.extend(f"  {line}" for line in _sanitize(system_prompt).split("\n"))
-    if isinstance(task, str) and task:
-        lines.append("task: |")
-        lines.extend(f"  {line}" for line in _sanitize(task).split("\n"))
-    if isinstance(tools, list) and tools:
-        lines.append("tools:")
-        for tool in tools:
-            lines.append(f"  - {_sanitize(str(tool))}")
-    return lines
-
-
-def _omp_entry_field_lines(entry: dict[str, Any], fields: list[str]) -> list[str]:
-    data = {field: entry[field] for field in fields if field in entry}
-    return _structured_lines(data) if data else []
-
-
-def parse_omp(
-    chain: list[dict[str, Any]],
-    outdir: str,
-    data_prefix: str,
-    data_ctr: list[int],
-) -> list[dict[str, Any]]:
-    del outdir, data_prefix, data_ctr
-    ir = []
-    sec = 0
-    blk = 0
-
-    def _emit_sep() -> None:
-        if sec > 0:
-            ir.append(_node("meta", ["", SEP]))
-
-    def _emit_header(h: str, **kw) -> None:
-        ir.append(_node("meta_header", [h, ""], _sec=sec, **kw))
-
-    def _emit_text_section(
-        label: str, node_type: str, lines: list[str], searchable: bool = True, **kw
-    ) -> None:
-        nonlocal sec, blk
-        if not lines:
-            return
-        _emit_sep()
-        _emit_header(label, **kw)
-        ir.append(_node(node_type, lines, searchable=searchable, _sec=sec, _blk=blk))
-        blk += 1
-        sec += 1
-
-    for r in chain:
-        rt = r.get("type")
-        if rt == "session":
-            continue
-
-        if rt == "compaction":
-            summary = r.get("summary") or r.get("shortSummary") or r.get("content")
-            lines = _sanitize(summary).split("\n") if isinstance(summary, str) and summary else []
-            _emit_text_section("[compaction]", "compaction", lines)
-            continue
-
-        if rt == "branch_summary":
-            lines = _sanitize(r.get("summary", "")).split("\n") if r.get("summary") else []
-            if r.get("fromId"):
-                lines = [f"from: {r.get('fromId')}", ""] + lines
-            _emit_text_section("[branch]", "branch", lines)
-            continue
-
-        if rt == "custom_message":
-            custom_type = r.get("customType") or "custom_message"
-            lines = _omp_content_lines(r.get("content"))
-            details = r.get("details")
-            if isinstance(details, dict) and details:
-                detail_lines = _structured_lines(details)
-                lines = (lines + ["", "details:"] + [f"  {line}" for line in detail_lines]) if lines else detail_lines
-            _emit_text_section(f"[custom] {custom_type}", "custom", lines)
-            continue
-
-        if rt == "session_init":
-            _emit_text_section("[session_init]", "session_init", _omp_session_init_lines(r))
-            continue
-
-        if rt in {"model_change", "thinking_level_change", "service_tier_change", "mode_change"}:
-            lines = _omp_entry_field_lines(r, ["model", "role", "thinkingLevel", "configured", "serviceTier", "mode", "data"])
-            _emit_text_section(f"[{rt}]", "meta_event", lines, searchable=False)
-            continue
-
-        if rt in {"label", "custom", "ttsr_injection", "mcp_tool_selection"}:
-            lines = _omp_entry_field_lines(
-                r,
-                ["targetId", "label", "customType", "data", "injectedRules", "selectedToolNames"],
-            )
-            _emit_text_section(f"[{rt}]", "meta_event", lines, searchable=False)
-            continue
-
-        if rt != "message":
-            continue
-
-        message = r.get("message", {})
-        if not isinstance(message, dict):
-            continue
-        role = message.get("role")
-
-        if role in {"user", "developer"}:
-            label = "[system]" if role == "developer" else "[user]"
-            node_type = "system" if role == "developer" else "user"
-            _emit_text_section(label, node_type, _omp_content_lines(message.get("content")))
-            continue
-
-        if role == "assistant":
-            blocks = message.get("content") or []
-            if not isinstance(blocks, list):
-                _emit_text_section("[assistant]", "assistant", _omp_content_lines(blocks))
-                continue
-
-            mark = len(ir)
-            saved_blk = blk
-            _emit_sep()
-            _emit_header("[assistant]")
-            has_any = False
-            for block in blocks:
-                if not isinstance(block, dict):
-                    continue
-                bt = block.get("type")
-                if bt == "text":
-                    lines = _sanitize(block.get("text", "")).split("\n") if block.get("text") else []
-                    if lines:
-                        ir.append(_node("assistant", lines, searchable=True, _sec=sec, _blk=blk))
-                        blk += 1
-                        has_any = True
-                    continue
-                if bt == "thinking":
-                    thinking = _sanitize(block.get("thinking", ""))
-                    if thinking:
-                        ir.append(_node("meta", [">>>thinking"], _sec=sec, _blk=blk))
-                        ir.append(_node("thinking", thinking.split("\n"), searchable=True, _sec=sec, _blk=blk))
-                        ir.append(_node("meta", ["<<<thinking"], _sec=sec, _blk=blk))
-                        blk += 1
-                        has_any = True
-                    continue
-                if bt == "redactedThinking":
-                    ir.append(_node("meta", [">>>redacted_thinking"], _sec=sec, _blk=blk))
-                    ir.append(
-                        _node(
-                            "redacted_thinking",
-                            ["[content redacted by model provider]"],
-                            searchable=True,
-                            _sec=sec,
-                            _blk=blk,
-                        )
-                    )
-                    ir.append(_node("meta", ["<<<redacted_thinking"], _sec=sec, _blk=blk))
-                    blk += 1
-                    has_any = True
-                    continue
-                if bt == "toolCall":
-                    name = block.get("name", "unknown")
-                    call_id = block.get("id", "")
-                    args = block.get("arguments")
-                    if not isinstance(args, dict):
-                        args = {}
-                    summary = _tool_summary(name, args)
-                    ir.append(
-                        _node(
-                            "meta",
-                            [f">>>tool_call {name}:{_short_tid(call_id)}"],
-                            _sec=sec,
-                            _blk=blk,
-                            _tool_summary=summary,
-                            _tid=call_id,
-                        )
-                    )
-                    lines = _structured_lines(args)
-                    if lines:
-                        ir.append(_node("tool_call", lines, searchable=True, _sec=sec, _blk=blk))
-                    ir.append(_node("meta", ["<<<tool_call"], _sec=sec, _blk=blk))
-                    blk += 1
-                    has_any = True
-                    continue
-                if bt == "image":
-                    ir.append(_node("assistant_image", ["[image]"], searchable=True, _sec=sec, _blk=blk))
-                    blk += 1
-                    has_any = True
-
-            if has_any:
-                sec += 1
-            else:
-                del ir[mark:]
-                blk = saved_blk
-            continue
-
-        if role == "toolResult":
-            name = message.get("toolName", "unknown")
-            call_id = message.get("toolCallId", "")
-            label = "[tool_error]" if message.get("isError") else "[tool]"
-            _emit_text_section(
-                f"{label} {name}:{_short_tid(call_id)}",
-                "tool_result",
-                _omp_tool_result_lines(message),
-                _tid=call_id,
-            )
-            continue
-
-        if role in {"custom", "hookMessage"}:
-            custom_type = message.get("customType") or role
-            _emit_text_section(f"[custom] {custom_type}", "custom", _omp_custom_lines(message))
-            continue
-
-        if role == "branchSummary":
-            lines = _sanitize(message.get("summary", "")).split("\n") if message.get("summary") else []
-            if message.get("fromId"):
-                lines = [f"from: {message.get('fromId')}", ""] + lines
-            _emit_text_section("[branch]", "branch", lines)
-            continue
-
-        if role == "compactionSummary":
-            lines = _sanitize(message.get("summary", "")).split("\n") if message.get("summary") else []
-            _emit_text_section("[compaction]", "compaction", lines)
-            continue
-
-        if role == "fileMention":
-            _emit_text_section("[file]", "file", _omp_file_mention_lines(message))
-            continue
-
-        if role == "bashExecution":
-            _emit_text_section("[bash]", "bash", _omp_execution_lines(message, "command"))
-            continue
-
-        if role == "pythonExecution":
-            _emit_text_section("[python]", "python", _omp_execution_lines(message, "code"))
-            continue
-
-    ir.append(_node("meta", [""]))
-    return ir
-
-
-def _reasonix_text_lines(content: object) -> list[str]:
-    if isinstance(content, str):
-        text = _sanitize(content)
-        return text.split("\n") if text else []
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                if item:
-                    parts.append(_sanitize(item))
-                continue
-            if not isinstance(item, dict):
-                continue
-            if isinstance(item.get("text"), str):
-                parts.append(_sanitize(item.get("text")))
-            elif item.get("type") == "image":
-                parts.append("[image]")
-            elif item.get("type") in {"document", "file"}:
-                parts.append("[document]")
-            elif item.get("type"):
-                parts.append(f"[{item.get('type')}]")
-        return _sanitize("\n\n".join(parts)).split("\n") if parts else []
-    if isinstance(content, dict):
-        return _structured_lines(content)
-    return []
-
-
-def _reasonix_image_lines(images: object) -> list[str]:
-    if not isinstance(images, list):
-        return []
-    return ["[image]" for image in images if image]
-
-
-def _reasonix_tool_input(arguments: object) -> dict[str, object]:
-    if isinstance(arguments, dict):
-        return arguments
-    if isinstance(arguments, str):
-        parsed = _maybe_json_string(arguments)
-        if isinstance(parsed, dict):
-            return parsed
-        if isinstance(parsed, list):
-            return {"arguments": parsed}
-        if arguments.strip():
-            return {"arguments": arguments}
-    if isinstance(arguments, list):
-        return {"arguments": arguments}
-    return {}
-
-
-def _reasonix_tool_lines(arguments: object) -> list[str]:
-    tool_input = _reasonix_tool_input(arguments)
-    if tool_input:
-        return _structured_lines(tool_input)
-    return []
-
-
-def _reasonix_is_tool_error(content: object) -> bool:
-    text = content if isinstance(content, str) else "\n".join(_structured_lines(content))
-    lowered = text.strip().lower()
-    return (
-        lowered.startswith("error:")
-        or lowered.startswith("blocked:")
-        or "permission denied" in lowered
-    )
-
-
-def parse_reasonix(
-    chain: list[dict[str, Any]],
-    outdir: str,
-    data_prefix: str,
-    data_ctr: list[int],
-) -> list[dict[str, Any]]:
-    del outdir, data_prefix, data_ctr
-    ir = []
-    sec = 0
-    blk = 0
-
-    call_names = {}
-    for msg in chain:
-        if msg.get("role") != "assistant":
-            continue
-        calls = msg.get("tool_calls")
-        if not isinstance(calls, list):
-            continue
-        for call in calls:
-            if not isinstance(call, dict):
-                continue
-            call_id = call.get("id")
-            name = call.get("name")
-            if call_id and name:
-                call_names[call_id] = name
-
-    def _emit_sep() -> None:
-        if sec > 0:
-            ir.append(_node("meta", ["", SEP]))
-
-    def _emit_header(h: str, **kw) -> None:
-        ir.append(_node("meta_header", [h, ""], _sec=sec, **kw))
-
-    def _emit_text_section(
-        label: str, node_type: str, lines: list[str], searchable: bool = True, **kw
-    ) -> None:
-        nonlocal sec, blk
-        if not lines:
-            return
-        _emit_sep()
-        _emit_header(label, **kw)
-        ir.append(_node(node_type, lines, searchable=searchable, _sec=sec, _blk=blk))
-        blk += 1
-        sec += 1
-
-    for msg in chain:
-        role = msg.get("role")
-
-        if role in {"system", "user"}:
-            label = "[system]" if role == "system" else "[user]"
-            node_type = "system" if role == "system" else "user"
-            lines = _reasonix_text_lines(msg.get("content"))
-            image_lines = _reasonix_image_lines(msg.get("images"))
-            if image_lines:
-                lines = lines + ([""] if lines else []) + image_lines
-            _emit_text_section(label, node_type, lines)
-            continue
-
-        if role == "assistant":
-            mark = len(ir)
-            saved_blk = blk
-            _emit_sep()
-            _emit_header("[assistant]")
-            has_any = False
-
-            reasoning = msg.get("reasoning_content")
-            if isinstance(reasoning, str) and reasoning:
-                ir.append(_node("meta", [">>>thinking"], _sec=sec, _blk=blk))
-                ir.append(_node("thinking", _sanitize(reasoning).split("\n"), searchable=True, _sec=sec, _blk=blk))
-                ir.append(_node("meta", ["<<<thinking"], _sec=sec, _blk=blk))
-                blk += 1
-                has_any = True
-
-            lines = _reasonix_text_lines(msg.get("content"))
-            if lines:
-                ir.append(_node("assistant", lines, searchable=True, _sec=sec, _blk=blk))
-                blk += 1
-                has_any = True
-
-            image_lines = _reasonix_image_lines(msg.get("images"))
-            if image_lines:
-                ir.append(_node("assistant_image", image_lines, searchable=True, _sec=sec, _blk=blk))
-                blk += 1
-                has_any = True
-
-            calls = msg.get("tool_calls")
-            if isinstance(calls, list):
-                for call in calls:
-                    if not isinstance(call, dict):
-                        continue
-                    name = call.get("name") or "unknown"
-                    call_id = call.get("id") or ""
-                    arguments = call.get("arguments")
-                    tool_input = _reasonix_tool_input(arguments)
-                    summary = _tool_summary(name, tool_input)
-                    ir.append(
-                        _node(
-                            "meta",
-                            [f">>>tool_call {name}:{_short_tid(call_id)}"],
-                            _sec=sec,
-                            _blk=blk,
-                            _tool_summary=summary,
-                            _tid=call_id,
-                        )
-                    )
-                    arg_lines = _reasonix_tool_lines(arguments)
-                    if arg_lines:
-                        ir.append(_node("tool_call", arg_lines, searchable=True, _sec=sec, _blk=blk))
-                    ir.append(_node("meta", ["<<<tool_call"], _sec=sec, _blk=blk))
-                    blk += 1
-                    has_any = True
-
-            if has_any:
-                sec += 1
-            else:
-                del ir[mark:]
-                blk = saved_blk
-            continue
-
-        if role == "tool":
-            call_id = msg.get("tool_call_id") or ""
-            name = msg.get("name") or call_names.get(call_id, "unknown")
-            content = msg.get("content")
-            is_error = _reasonix_is_tool_error(content)
-            label = "[tool_error]" if is_error else "[tool]"
-            node_type = "tool_error" if is_error else "tool_result"
-            _emit_text_section(
-                f"{label} {name}:{_short_tid(call_id)}",
-                node_type,
-                _reasonix_text_lines(content),
-                _tid=call_id,
-            )
-            continue
-
-    ir.append(_node("meta", [""]))
-    return ir
-
-
-def parse_t3code(
-    chain: list[dict[str, Any]],
-    outdir: str,
-    data_prefix: str,
-    data_ctr: list[int],
-) -> list[dict[str, Any]]:
-    del outdir, data_prefix, data_ctr
-    ir = []
-    sec = 0
-    blk = 0
-
-    def _emit_sep() -> None:
-        if sec > 0:
-            ir.append(_node("meta", ["", SEP]))
-
-    def _emit_header(h: str) -> None:
-        ir.append(_node("meta_header", [h, ""], _sec=sec))
-
-    def _emit_text_section(label: str, node_type: str, lines: list[str], searchable: bool = True) -> None:
-        nonlocal sec, blk
-        if not lines:
-            return
-        _emit_sep()
-        _emit_header(label)
-        ir.append(_node(node_type, lines, searchable=searchable, _sec=sec, _blk=blk))
-        blk += 1
-        sec += 1
-
-    for r in chain:
-        rt = r.get("type")
-
-        if rt == "t3_session":
-            lines = _structured_lines(
-                {
-                    key: r.get(key)
-                    for key in ("id", "timestamp", "cwd", "title", "model")
-                    if r.get(key) is not None
-                }
-            )
-            _emit_text_section("[session_init]", "session_init", lines, searchable=False)
-            continue
-
-        if rt == "t3_message":
-            role = r.get("role")
-            content = r.get("content")
-            lines = _sanitize(content).split("\n") if isinstance(content, str) and content else []
-            if role == "developer":
-                _emit_text_section("[system]", "system", lines)
-            elif role == "user":
-                _emit_text_section("[user]", "user", lines)
-            elif role == "assistant":
-                _emit_text_section("[assistant]", "assistant", lines)
-            else:
-                _emit_text_section(f"[custom] message:{role or 'unknown'}", "custom", lines)
-            continue
-
-        if rt in {"t3_custom_message", "t3_activity"}:
-            custom_type = r.get("customType") or rt
-            content = r.get("content")
-            lines = _sanitize(content).split("\n") if isinstance(content, str) and content else []
-            details = r.get("details")
-            if isinstance(details, dict) and details:
-                detail_lines = _structured_lines(details)
-                lines = (lines + ["", "details:"] + [f"  {line}" for line in detail_lines]) if lines else detail_lines
-            _emit_text_section(f"[custom] {custom_type}", "custom", lines)
-            continue
-
-    ir.append(_node("meta", [""]))
-    return ir
-
-
 # ── IR walk ──
 
 def _is_tool_summary(o):
@@ -1571,12 +309,17 @@ def _is_thinking(o):
     return o["type"] in ("thinking", "redacted_thinking")
 
 def _sec_roles(ir):
-    """Map sec -> role from meta_header content."""
+    """Map sec -> structural role, falling back to legacy header parsing."""
     roles = {}
     for o in ir:
         if o["type"] == "meta_header":
             s = o.get("_sec")
-            if s is None: continue
+            if s is None:
+                continue
+            role = o.get("_role")
+            if role:
+                roles[s] = role
+                continue
             h = o["content"][0]
             if h.startswith("[tool_error]"):
                 roles[s] = "tool_error"
@@ -1690,9 +433,13 @@ def lower_brief(ir, truncate, filename="", truncate_user=256):
     roles = _sec_roles(ir)
     tid_ranges = _tid_result_ranges(ir)
 
-    # Sections visible in truncation: not tool/tool_error/system
-    visible_secs = {sec for sec, role in roles.items()
-                     if role not in ("tool", "tool_error", "system")}
+    # Sections visible in truncation: conversational user/assistant content only.
+    visible_secs = {
+        sec
+        for sec, role in roles.items()
+        if role not in ("tool", "tool_error", "system", "custom")
+        and not role.startswith("custom:")
+    }
 
     # Determine which assistant sections to merge:
     # An assistant section merges if the previous VISIBLE section is also assistant.
@@ -1788,7 +535,10 @@ def lower_brief(ir, truncate, filename="", truncate_user=256):
             c0 = o["content"][0]
             if c0.startswith(">>>tool_call"):
                 # Hide noise tools (internal bookkeeping)
-                tool_name = c0.split()[1].split(":")[0] if len(c0.split()) > 1 else ""
+                tool_name = o.get("_tool_name")
+                if not isinstance(tool_name, str):
+                    # Defensive fallback for IR built without structural tool names.
+                    tool_name = c0.split()[1].split(":")[0] if len(c0.split()) > 1 else ""
                 if tool_name in _BRIEF_HIDE_TOOLS:
                     o["content_brief"] = None
                     continue
@@ -1963,30 +713,63 @@ def emit(ir, key="content"):
 
 # ── compile ──
 
+_FRONTEND_PARSERS = {
+    "claude": parse_claude_events,
+    "codex": parse_codex_events,
+    "omp": parse_omp_events,
+    "reasonix": parse_reasonix_events,
+    "t3code": parse_t3code_events,
+}
+_RECORD_SEGMENT_SPLITTERS = {
+    "claude": split_claude_record_segments,
+    "codex": split_codex_record_segments,
+    "omp": split_omp_record_segments,
+}
+
+
+def _harness_error(prefix):
+    choices = ", ".join(HARNESS_IDS)
+    return ValueError(f"{prefix}; pass --harness with one of: {choices}")
+
+
+def _record_chains(harness, records, segment_count):
+    splitter = _RECORD_SEGMENT_SPLITTERS.get(harness)
+    chains = list(splitter(records)) if splitter else [records] * segment_count
+    if len(chains) < segment_count:
+        chains.extend([records] * (segment_count - len(chains)))
+    return chains[:segment_count]
+
+
 def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
-            grep_pattern=None, quiet=False):
+            grep_pattern=None, quiet=False, conversation=None, harness=None):
     if output_dir is None:
         output_dir = os.path.dirname(os.path.abspath(input_path)) or "."
     os.makedirs(output_dir, exist_ok=True)
     base = os.path.splitext(os.path.basename(input_path))[0]
 
-    raw_recs = lex(input_path)
-    src_format = detect_format(raw_recs)
-    if src_format == "codex":
-        recs = raw_recs
-        chains = split_codex_chains(recs)
-    elif src_format == "omp":
-        recs = raw_recs
-        chains = split_omp_chains(recs)
-    elif src_format == "t3code":
-        recs = raw_recs
-        chains = split_t3code_chains(recs)
-    elif src_format == "reasonix":
-        recs = raw_recs
-        chains = [recs]
-    else:
-        recs = merge_chunks(raw_recs)
-        chains = split_chains(recs)
+    if conversation is not None and not isinstance(conversation, Conversation):
+        raise TypeError("conversation must be a Conversation")
+    if conversation is not None and harness is not None and harness != conversation.harness:
+        raise ValueError(
+            f"conversation harness {conversation.harness!r} does not match {harness!r}"
+        )
+
+    raw_recs = [] if conversation is not None else lex(input_path)
+    src_format = conversation.harness if conversation is not None else harness
+    if src_format is None:
+        src_format = detect_format(raw_recs)
+        if src_format is None:
+            raise _harness_error(f"could not detect session harness for {input_path}")
+    parser = _FRONTEND_PARSERS.get(src_format)
+    if parser is None:
+        raise _harness_error(f"unsupported harness {src_format!r}")
+
+    parsed_conversation = conversation or parser(raw_recs)
+    chains = _record_chains(
+        src_format,
+        raw_recs,
+        len(parsed_conversation.segments),
+    )
     if not chains:
         if not quiet:
             print("No conversation chains found.")
@@ -2004,16 +787,13 @@ def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
         vp = os.path.join(output_dir, vfn)
         data_ctr = [0]
 
-        if src_format == "codex":
-            ir = parse_codex(chain, output_dir, f"{base}{sfx}", data_ctr)
-        elif src_format == "omp":
-            ir = parse_omp(chain, output_dir, f"{base}{sfx}", data_ctr)
-        elif src_format == "t3code":
-            ir = parse_t3code(chain, output_dir, f"{base}{sfx}", data_ctr)
-        elif src_format == "reasonix":
-            ir = parse_reasonix(chain, output_dir, f"{base}{sfx}", data_ctr)
-        else:
-            ir = parse(chain, output_dir, f"{base}{sfx}", data_ctr)
+        ir = render_conversation(
+            parsed_conversation,
+            output_dir,
+            f"{base}{sfx}",
+            data_ctr,
+            segment_index=i,
+        )
         assign_lines(ir)
         lower_brief(ir, truncate, ffn, truncate_user)
 

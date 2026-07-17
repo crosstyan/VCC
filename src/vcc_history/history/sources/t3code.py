@@ -245,7 +245,7 @@ def records_from_db(db_path: Path, config: HistoryConfig) -> list[SessionRecord]
         source_path = _codex_rollout_path(db_path, thread_id, config)
         if source_path is None:
             source_path = codex.rollout_for_session_id(string_or_none(row["provider_thread_id"]), config)
-        path_text = str(source_path) if source_path is not None else _ref(db_path, thread_id)
+        path_text = _ref(db_path, thread_id)
         provider, model = _model_parts(row["model_selection_json"], row["provider_name"])
         alias_keys = [f"thread:t3code:{canonical_path(db_path)}:{thread_id}"]
         if source_path is not None:

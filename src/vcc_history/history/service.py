@@ -93,12 +93,18 @@ def compile_session(
     output_dir: str | None = None,
     config: HistoryConfig | None = None,
     all_threads: bool = False,
+    harness: str | None = None,
 ) -> list[tuple[str, list[dict[str, object]]]]:
     resolved = config or HistoryConfig.from_env()
     t3_ref = t3code.parse_ref(path)
     if t3_ref is not None:
+        if harness not in {None, "t3code"}:
+            raise HistoryError(
+                f"T3 Code thread refs require harness 't3code', not {harness!r}"
+            )
         db_path, thread_id = t3_ref
         path = str(t3code.export_thread(db_path, thread_id, resolved))
+        harness = "t3code"
 
     input_path = Path(path).expanduser()
     if input_path.is_file() and t3code.is_t3code_db(input_path):
@@ -115,6 +121,7 @@ def compile_session(
                     grep_pattern=grep_pattern,
                     output_dir=output_dir,
                     config=resolved,
+                    harness=record["harness"],
                 )
             )
         return results
@@ -124,6 +131,7 @@ def compile_session(
         output_dir=output_dir,
         grep_pattern=grep_pattern,
         quiet=grep_pattern is not None,
+        harness=harness,
     )
 
 
@@ -140,6 +148,7 @@ def search_sessions(
             grep_pattern=pattern,
             output_dir=str(_search_cache_dir(record, resolved)),
             config=resolved,
+            harness=record["harness"],
         )
         for compiled_path, ir in reversed(compiled):
             for node in reversed(ir):
