@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -10,16 +11,18 @@ from .models import HarnessFilter, SearchHit, SessionRecord
 from .refs import absolute_ref
 from .sources import SOURCES, selected_sources
 from .sources import t3code
+from .sources.base import canonical_path, ensure_private_cache_path
 
 
 def collect_sessions(
     harness: HarnessFilter = "all",
     config: HistoryConfig | None = None,
+    include_subagents: bool = False,
 ) -> list[SessionRecord]:
     resolved = config or HistoryConfig.from_env()
     records: list[SessionRecord] = []
     for source in selected_sources(harness):
-        records.extend(source.collect(resolved))
+        records.extend(source.collect(resolved, include_subagents=include_subagents))
 
     if harness == "all":
         deduped: dict[str, SessionRecord] = {}
@@ -95,7 +98,13 @@ def search_sessions(
     hits: list[SearchHit] = []
     vcc = compiler.load_compiler(resolved)
     for record in reversed(records):
-        for compiled_path, ir in compile_session(record["path"], grep_pattern=pattern, config=resolved):
+        compiled = compile_session(
+            record["path"],
+            grep_pattern=pattern,
+            output_dir=str(_search_cache_dir(record, resolved)),
+            config=resolved,
+        )
+        for compiled_path, ir in reversed(compiled):
             for node in reversed(ir):
                 if not node.get("searchable"):
                     continue
@@ -122,6 +131,24 @@ def search_sessions(
                     }
                 )
     return hits
+
+
+def _search_cache_dir(record: SessionRecord, config: HistoryConfig) -> Path:
+    source_ref = _canonical_source_ref(record["path"])
+    cache_key = f"{record['harness']}\0{source_ref}"
+    digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
+    cache_root = Path(canonical_path(config.cache_dir))
+    result = cache_root / "compiled" / record["harness"] / digest
+    ensure_private_cache_path(cache_root, result)
+    return result
+
+
+def _canonical_source_ref(value: str) -> str:
+    t3_ref = t3code.parse_ref(value)
+    if t3_ref is not None:
+        db_path, thread_id = t3_ref
+        return f"t3code\0{canonical_path(db_path)}\0{thread_id}"
+    return canonical_path(value)
 
 
 def _matches_cwd(record: SessionRecord, cwd: str, config: HistoryConfig) -> bool:

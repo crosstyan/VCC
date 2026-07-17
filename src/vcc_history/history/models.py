@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict
 
-Harness = Literal["omp", "codex", "t3code", "reasonix"]
-HarnessFilter = Literal["all", "omp", "codex", "t3code", "reasonix"]
+Harness = Literal["claude", "omp", "codex", "t3code", "reasonix"]
+HarnessFilter = Literal["all", "claude", "omp", "codex", "t3code", "reasonix"]
 
-HARNESS_CHOICES: tuple[str, ...] = ("all", "omp", "codex", "t3code", "reasonix")
-SOURCE_ORDER: tuple[Harness, ...] = ("codex", "omp", "t3code", "reasonix")
+HARNESS_CHOICES: tuple[str, ...] = ("all", "claude", "omp", "codex", "t3code", "reasonix")
+SOURCE_ORDER: tuple[Harness, ...] = ("claude", "codex", "omp", "t3code", "reasonix")
 
 
 class SessionRecord(TypedDict, total=False):

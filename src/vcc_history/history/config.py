@@ -9,6 +9,7 @@ from pathlib import Path
 class HistoryConfig:
     repo_root: Path
     compiler_path: Path
+    claude_config_dir: Path
     codex_home: Path
     omp_agent_dir: Path
     t3code_home: Path
@@ -23,6 +24,7 @@ class HistoryConfig:
         return cls(
             repo_root=repo_root,
             compiler_path=compiler_path,
+            claude_config_dir=Path(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")).expanduser(),
             codex_home=Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser(),
             omp_agent_dir=Path(os.environ.get("PI_CODING_AGENT_DIR", "~/.omp/agent")).expanduser(),
             t3code_home=Path(os.environ.get("T3CODE_HOME", "~/.t3")).expanduser(),

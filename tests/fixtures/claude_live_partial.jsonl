@@ -1,0 +1,3 @@
+{"type":"user","sessionId":"claude-session-live","cwd":"/workspace/example-project","timestamp":"2026-06-24T12:00:00Z","message":{"role":"user","content":"Valid content before a live partial record."}}
+{"type":"assistant","sessionId":"claude-session-live","cwd":"/workspace/example-project","timestamp":"2026-06-24T12:00:01Z","message":{"id":"msg_live","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"Valid response before the live partial record."}]}}
+{"type":"assistant","timestamp":"2026-06-24T12:00:02Z","message":{"id":"msg_incomplete","content":[{"type":"text","text":"unfinished

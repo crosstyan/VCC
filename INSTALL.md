@@ -1,100 +1,123 @@
-# Installation Guide for Codex, OMP, T3 Code History, and Reasonix
+# Installation Guide for Claude Code, Codex, OMP, T3 Code History, and Reasonix
 
 ## Requirements
 
 - Python 3.10+
-- uv
-- Codex, OMP, and/or Reasonix
-- T3 Code is optional; VCC reads its history from SQLite when `${T3CODE_HOME:-~/.t3}` exists.
+- [uv](https://docs.astral.sh/uv/)
+- Claude Code, Codex, OMP, and/or Reasonix
+- T3 Code is optional; VCC reads its history from SQLite when `${T3CODE_HOME:-$HOME/.t3}` exists.
 
-## Install
+## Install the CLI
 
-Keep this repo at a stable path, then install the uv project:
-
-```bash
-cd /Users/crosstyan/Code/VCC
-uv sync
-```
-
-The skills invoke the CLI with:
+Keep this repository at a stable path because the editable tool installation points back to the checkout. From the repository root, run:
 
 ```bash
-uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc
+uv tool install --editable .
+xcc --help
 ```
 
-If the repo lives somewhere else, set `VCC_ROOT` for the harness process.
+The skills call the installed `xcc` command directly. No checkout path or `VCC_ROOT` environment variable is needed at runtime.
 
-Install the skills by symlinking these four directories into each harness skill directory:
+## Install the Skills
 
-- `skills/conversation-compiler`
-- `skills/readchat`
-- `skills/recall`
-- `skills/searchchat`
-
-Codex:
+From the repository root, define the shared skill list and installer in your shell:
 
 ```bash
-mkdir -p ~/.codex/skills
-ln -sfn /Users/crosstyan/Code/VCC/skills/conversation-compiler ~/.codex/skills/conversation-compiler
-ln -sfn /Users/crosstyan/Code/VCC/skills/readchat ~/.codex/skills/readchat
-ln -sfn /Users/crosstyan/Code/VCC/skills/recall ~/.codex/skills/recall
-ln -sfn /Users/crosstyan/Code/VCC/skills/searchchat ~/.codex/skills/searchchat
+VCC_ROOT=$(pwd -P)
+VCC_SKILLS="conversation-compiler readchat recall searchchat"
+
+install_vcc_skills() {
+  local skills_dir=$1
+  local destination
+  mkdir -p "$skills_dir"
+  for skill in $VCC_SKILLS; do
+    destination="$skills_dir/$skill"
+    if [ -e "$destination" ] && [ ! -L "$destination" ]; then
+      printf 'Refusing to replace existing non-symlink: %s\n' "$destination" >&2
+      return 1
+    fi
+    ln -sfn "$VCC_ROOT/skills/$skill" "$destination"
+  done
+}
 ```
 
-OMP:
+The installer refuses to overwrite a real file or directory. If a destination already exists as a non-symlink, move or remove it explicitly, then rerun the installer.
+
+Then install the four skill directories into each harness you use.
+
+### Claude Code
+
+Claude Code user skills live under `CLAUDE_CONFIG_DIR` when it is set, otherwise under `$HOME/.claude`:
 
 ```bash
-OMP_SKILLS_DIR="${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/skills"
-if [ -d "$(dirname "$OMP_SKILLS_DIR")" ]; then
-  mkdir -p "$OMP_SKILLS_DIR"
-  ln -sfn /Users/crosstyan/Code/VCC/skills/conversation-compiler "$OMP_SKILLS_DIR/conversation-compiler"
-  ln -sfn /Users/crosstyan/Code/VCC/skills/readchat "$OMP_SKILLS_DIR/readchat"
-  ln -sfn /Users/crosstyan/Code/VCC/skills/recall "$OMP_SKILLS_DIR/recall"
-  ln -sfn /Users/crosstyan/Code/VCC/skills/searchchat "$OMP_SKILLS_DIR/searchchat"
-fi
+install_vcc_skills "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
 ```
 
-Reasonix:
+### Codex
 
 ```bash
-REASONIX_SKILLS_DIR="${REASONIX_HOME:-$HOME/.reasonix}/skills"
-if [ -d "$(dirname "$REASONIX_SKILLS_DIR")" ]; then
-  mkdir -p "$REASONIX_SKILLS_DIR"
-  ln -sfn /Users/crosstyan/Code/VCC/skills/conversation-compiler "$REASONIX_SKILLS_DIR/conversation-compiler"
-  ln -sfn /Users/crosstyan/Code/VCC/skills/readchat "$REASONIX_SKILLS_DIR/readchat"
-  ln -sfn /Users/crosstyan/Code/VCC/skills/recall "$REASONIX_SKILLS_DIR/recall"
-  ln -sfn /Users/crosstyan/Code/VCC/skills/searchchat "$REASONIX_SKILLS_DIR/searchchat"
-fi
+install_vcc_skills "${CODEX_HOME:-$HOME/.codex}/skills"
 ```
 
-Restart the harness so it picks up the skills.
+### OMP
 
-T3 Code does not need skill installation for history search. `xcc --harness t3code` reads `${T3CODE_HOME:-~/.t3}/userdata/state.sqlite` and `${T3CODE_HOME:-~/.t3}/dev/state.sqlite` if present. Override with `VCC_T3CODE_DB=/path/to/state.sqlite`.
+```bash
+install_vcc_skills "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/skills"
+```
+
+### Reasonix
+
+```bash
+install_vcc_skills "${REASONIX_HOME:-$HOME/.reasonix}/skills"
+```
+
+Restart each harness after installing its skills.
+
+T3 Code does not need skill installation for history search. `xcc list --harness t3code` reads `${T3CODE_HOME:-$HOME/.t3}/userdata/state.sqlite` and `${T3CODE_HOME:-$HOME/.t3}/dev/state.sqlite` when present. Override discovery with `VCC_T3CODE_DB=/path/to/state.sqlite`.
 
 ## Update
 
-Pull or edit the repo, then run `uv sync` if dependencies changed. Symlinked skill installs do not need to be recopied.
+Pull or edit the checkout. Because the tool is installed editable, source and skill changes take effect immediately. If package metadata or dependencies changed, refresh the tool environment from the repository root:
+
+```bash
+uv tool install --editable . --force
+```
+
+Symlinked skill installs do not need to be recopied.
 
 ## Verify
 
 Run:
 
 ```bash
-uv --project /Users/crosstyan/Code/VCC run xcc --help
-uv --project /Users/crosstyan/Code/VCC run xcc list --harness all --limit 5
-uv --project /Users/crosstyan/Code/VCC run xcc list --harness t3code --limit 5
-uv --project /Users/crosstyan/Code/VCC run xcc list --harness reasonix --limit 5
+xcc --help
+xcc list --harness all --limit 5
+xcc list --harness claude --limit 5
+xcc list --harness t3code --limit 5
+xcc list --harness reasonix --limit 5
 ```
 
-Then ask Codex, OMP, or Reasonix to use `recall` or `searchchat`.
+Claude Code main-session transcripts are listed by default. If you also want to verify nested subagent discovery, run:
+
+```bash
+xcc list --harness claude --limit 5 --include-subagents
+```
+
+Then ask Claude Code, Codex, OMP, or Reasonix to use `recall` or `searchchat`.
 
 ## Uninstall
 
-Delete these symlinks from `~/.codex/skills/`, `${PI_CODING_AGENT_DIR:-~/.omp/agent}/skills`, and/or `${REASONIX_HOME:-~/.reasonix}/skills`:
+Remove the tool:
+
+```bash
+uv tool uninstall vcc-history
+```
+
+Delete the four skill symlinks from the harness skill directories where you installed them:
 
 - `conversation-compiler`
 - `readchat`
 - `recall`
 - `searchchat`
 
-Restart the harness after uninstalling.
+Restart the harness after uninstalling its skills.

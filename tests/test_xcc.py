@@ -1,11 +1,14 @@
 import json
 import os
+import re
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from click.testing import CliRunner
 
@@ -19,6 +22,8 @@ from vcc_history.cli import main
 from vcc_history.history import service
 from vcc_history.history.compiler import reset_compiler_cache
 from vcc_history.history.refs import read_ref
+from vcc_history.history.sources.reasonix import _workspace_slug
+from vcc_history.history.sources.t3code import _export_path
 
 
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -29,10 +34,18 @@ class XccTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
+        self.claude_config = self.root / "claude"
         self.codex_home = self.root / "codex"
         self.omp_agent = self.root / "omp-agent"
         self.t3_home = self.root / "t3"
         self.reasonix_home = self.root / "reasonix"
+        self.workspace = self.root / "workspace" / "example-project"
+        self.workspace.mkdir(parents=True)
+        self.claude_project = self.claude_config / "projects" / "-workspace-example-project"
+        self.claude_session = self.claude_project / "claude_basic.jsonl"
+        self.claude_subagent_session = (
+            self.claude_project / "claude-session-basic" / "subagents" / "agent-history.jsonl"
+        )
         self.codex_session = self.codex_home / "sessions" / "2026" / "06" / "codex_basic.jsonl"
         self.omp_session = self.omp_agent / "sessions" / "--tmp--omp-project" / "omp_basic.jsonl"
         self.reasonix_session = (
@@ -55,11 +68,41 @@ class XccTests(unittest.TestCase):
             / "sessions"
             / "20260623-010204.123456789-hidden-model.jsonl"
         )
+        self.claude_session.parent.mkdir(parents=True)
+        self.claude_subagent_session.parent.mkdir(parents=True)
         self.codex_session.parent.mkdir(parents=True)
         self.omp_session.parent.mkdir(parents=True)
         self.reasonix_session.parent.mkdir(parents=True)
         self.reasonix_subagent_session.parent.mkdir(parents=True)
         self.reasonix_cleanup_session.parent.mkdir(parents=True)
+        claude_fixture = (FIXTURES / "claude_basic.jsonl").read_text(encoding="utf-8")
+        claude_fixture = claude_fixture.replace(
+            "/workspace/example-project", str(self.workspace)
+        )
+        self.claude_session.write_text(claude_fixture, encoding="utf-8")
+        self.claude_subagent_session.write_text(
+            claude_fixture.replace(
+                "sanitized Claude fixture marker", "nested Claude subagent marker"
+            ),
+            encoding="utf-8",
+        )
+        (self.claude_project / "journal.jsonl").write_text(
+            '{"type":"progress","timestamp":"2026-06-24T09:00:00Z","data":{"journal":true}}\n',
+            encoding="utf-8",
+        )
+        (self.claude_project / "metadata-only.jsonl").write_text(
+            "\n".join(
+                [
+                    '{"type":"assistant","timestamp":"2026-06-24T09:00:01Z","message":{"model":"claude-sonnet-4-6"}}',
+                    '{"type":"ai-title","timestamp":"2026-06-24T09:00:02Z","aiTitle":"Metadata only"}',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        nested_nonagent = self.claude_project / "other" / "nested.jsonl"
+        nested_nonagent.parent.mkdir(parents=True)
+        nested_nonagent.write_text(claude_fixture, encoding="utf-8")
         shutil.copyfile(FIXTURES / "codex_basic.jsonl", self.codex_session)
         shutil.copyfile(FIXTURES / "omp_basic.jsonl", self.omp_session)
         shutil.copyfile(FIXTURES / "reasonix_basic.jsonl", self.reasonix_session)
@@ -103,6 +146,7 @@ class XccTests(unittest.TestCase):
         )
 
         self.original_env = {
+            "CLAUDE_CONFIG_DIR": os.environ.get("CLAUDE_CONFIG_DIR"),
             "CODEX_HOME": os.environ.get("CODEX_HOME"),
             "PI_CODING_AGENT_DIR": os.environ.get("PI_CODING_AGENT_DIR"),
             "T3CODE_HOME": os.environ.get("T3CODE_HOME"),
@@ -112,6 +156,7 @@ class XccTests(unittest.TestCase):
             "VCC_COMPILER_PATH": os.environ.get("VCC_COMPILER_PATH"),
             "VCC_ROOT": os.environ.get("VCC_ROOT"),
         }
+        os.environ["CLAUDE_CONFIG_DIR"] = str(self.claude_config)
         os.environ["CODEX_HOME"] = str(self.codex_home)
         os.environ["PI_CODING_AGENT_DIR"] = str(self.omp_agent)
         os.environ["T3CODE_HOME"] = str(self.t3_home)
@@ -131,10 +176,23 @@ class XccTests(unittest.TestCase):
         reset_compiler_cache()
         self.tmp.cleanup()
 
-    def test_collect_sessions_reads_codex_and_omp_metadata(self):
+    def test_collect_sessions_reads_all_harness_metadata(self):
         records = service.collect_sessions("all")
 
-        self.assertEqual({record["harness"] for record in records}, {"codex", "omp", "reasonix"})
+        self.assertEqual(
+            {record["harness"] for record in records},
+            {"claude", "codex", "omp", "reasonix"},
+        )
+        claude = next(record for record in records if record["harness"] == "claude")
+        self.assertEqual(claude["path"], str(self.claude_session))
+        self.assertEqual(claude["session_id"], "claude-session-basic")
+        self.assertEqual(claude["cwd"], str(self.workspace))
+        self.assertEqual(claude["title"], "Sanitized Claude fixture")
+        self.assertEqual(claude["model"], "claude-opus-4-1")
+        self.assertEqual(claude["timestamp"], "2026-06-24T10:00:07Z")
+        self.assertIsNone(claude["source"])
+        claude_records = [record for record in records if record["harness"] == "claude"]
+        self.assertEqual(claude_records, [claude])
         omp = next(record for record in records if record["harness"] == "omp")
         self.assertEqual(omp["cwd"], "/tmp/omp-project")
         self.assertEqual(omp["title"], "OMP fixture")
@@ -150,6 +208,250 @@ class XccTests(unittest.TestCase):
         self.assertEqual(subagent["source"], "subagent")
         self.assertEqual(subagent["cwd"], "/tmp/reasonix-project")
         self.assertNotIn(str(self.reasonix_cleanup_session), {record["path"] for record in records})
+
+    def test_claude_missing_store_is_skipped(self):
+        original = os.environ["CLAUDE_CONFIG_DIR"]
+        os.environ["CLAUDE_CONFIG_DIR"] = str(self.root / "missing-claude-config")
+        try:
+            self.assertEqual(service.collect_sessions("claude"), [])
+        finally:
+            os.environ["CLAUDE_CONFIG_DIR"] = original
+
+    def test_claude_live_partial_utf8_does_not_break_discovery(self):
+        with self.claude_session.open("ab") as fh:
+            fh.write(b'{"type":"user","message":{"content":"\xe2')
+
+        records = service.collect_sessions("claude")
+
+        self.assertEqual([record["path"] for record in records], [str(self.claude_session)])
+
+    def test_claude_discovery_skips_completed_invalid_utf8_records(self):
+        invalid = self.claude_project / "invalid-utf8.jsonl"
+        invalid.write_bytes(
+            b'{"type":"user","sessionId":"bad","cwd":"/tmp/demo",'
+            b'"timestamp":"2026-07-17T00:00:00Z","message":{"role":"user",'
+            b'"content":"bad-utf8-\xff"}}\n'
+        )
+
+        records = service.collect_sessions("claude")
+
+        self.assertNotIn(str(invalid), {record["path"] for record in records})
+
+    def test_claude_custom_title_wins_and_synthetic_model_is_ignored(self):
+        metadata = self.claude_project / "metadata.jsonl"
+        metadata.write_text(
+            "\n".join(
+                [
+                    '{"type":"user","sessionId":"metadata","cwd":"/tmp/demo",'
+                    '"timestamp":"2026-07-17T00:00:00Z","message":{"role":"user",'
+                    '"content":"hello"}}',
+                    '{"type":"assistant","sessionId":"metadata","cwd":"/tmp/demo",'
+                    '"timestamp":"2026-07-17T00:00:01Z","message":{"role":"assistant",'
+                    '"model":"claude-opus-4-8","content":[{"type":"text","text":"answer"}]}}',
+                    '{"type":"ai-title","sessionId":"metadata","aiTitle":"Generated title"}',
+                    '{"type":"custom-title","sessionId":"metadata",'
+                    '"customTitle":"User chosen title"}',
+                    '{"type":"assistant","sessionId":"metadata","cwd":"/tmp/demo",'
+                    '"timestamp":"2026-07-17T00:00:02Z","message":{"role":"assistant",'
+                    '"model":"<synthetic>","content":[{"type":"text","text":"summary"}]}}',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        record = next(
+            record
+            for record in service.collect_sessions("claude")
+            if record["path"] == str(metadata)
+        )
+
+        self.assertEqual(record["title"], "User chosen title")
+        self.assertEqual(record["model"], "claude-opus-4-8")
+
+    def test_claude_subagents_are_optional_and_only_agent_jsonl_is_nested(self):
+        main_records = service.collect_sessions("claude")
+        all_records = service.collect_sessions("claude", include_subagents=True)
+
+        self.assertEqual([record["path"] for record in main_records], [str(self.claude_session)])
+        self.assertEqual(
+            {record["path"] for record in all_records},
+            {str(self.claude_session), str(self.claude_subagent_session)},
+        )
+        subagent = next(record for record in all_records if record["source"] == "subagent")
+        self.assertEqual(subagent["session_id"], "history")
+        self.assertNotIn(
+            str(self.claude_project / "other" / "nested.jsonl"),
+            {record["path"] for record in all_records},
+        )
+
+    def test_claude_symlink_alias_is_deduplicated_in_favor_of_real_path(self):
+        alias = self.claude_project / "claude_alias.jsonl"
+        alias.symlink_to(self.claude_session)
+
+        records = service.collect_sessions("claude")
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["path"], str(self.claude_session))
+
+    def test_claude_inode_alias_does_not_reclassify_main_as_subagent(self):
+        alias = self.claude_project / "claude-a" / "subagents" / "agent-alias.jsonl"
+        alias.parent.mkdir(parents=True)
+        os.link(self.claude_session, alias)
+
+        records = service.collect_sessions("claude", include_subagents=True)
+
+        main = next(record for record in records if record["session_id"] == "claude-session-basic")
+        self.assertEqual(main["path"], str(self.claude_session))
+        self.assertIsNone(main["source"])
+        self.assertNotIn(str(alias), {record["path"] for record in records})
+
+    def test_claude_cwd_filter_uses_canonical_paths(self):
+        workspace_alias = self.root / "workspace-alias"
+        workspace_alias.symlink_to(self.workspace, target_is_directory=True)
+
+        records = service.filter_sessions(
+            service.collect_sessions("claude"),
+            str(workspace_alias),
+            latest=False,
+            limit=0,
+        )
+
+        self.assertEqual([record["path"] for record in records], [str(self.claude_session)])
+
+    def test_cli_exposes_claude_choices_without_renaming_existing_harnesses(self):
+        help_result = CliRunner().invoke(main, ["list", "--help"])
+        self.assertEqual(help_result.exit_code, 0, help_result.output)
+        self.assertIn("all|claude|omp|codex|t3code|reasonix", help_result.output)
+        self.assertIn("--include-subagents", help_result.output)
+        self.assertIn("Include nested Claude Code subagent", help_result.output)
+        self.assertIn("transcripts.", help_result.output)
+
+        list_result = CliRunner().invoke(main, ["list", "--harness", "all", "--limit", "10"])
+        self.assertEqual(list_result.exit_code, 0, list_result.output)
+        self.assertIn("claude\t", list_result.output)
+        self.assertIn("codex\t", list_result.output)
+        self.assertIn("omp\t", list_result.output)
+        self.assertIn("reasonix\t", list_result.output)
+        self.assertNotIn("claude (subagent)", list_result.output)
+
+        subagent_result = CliRunner().invoke(
+            main,
+            ["list", "--harness", "claude", "--limit", "10", "--include-subagents"],
+        )
+        self.assertEqual(subagent_result.exit_code, 0, subagent_result.output)
+        self.assertIn("claude (subagent)\t", subagent_result.output)
+
+    def test_claude_search_uses_cache_and_returns_readable_refs(self):
+        result = CliRunner().invoke(
+            main,
+            ["search", "sanitized Claude fixture marker", "--harness", "claude", "--json"],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        hits = json.loads(result.output)
+        self.assertGreaterEqual(len(hits), 1)
+        self.assertTrue(all(hit["harness"] == "claude" for hit in hits))
+        compiled_path = Path(hits[0]["compiled_path"])
+        self.assertTrue(
+            compiled_path.is_relative_to(self.root.resolve() / "cache" / "compiled" / "claude")
+        )
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(compiled_path.parent.stat().st_mode), 0o700)
+        self.assertIn("sanitized Claude fixture marker", read_ref(hits[0]["ref"]))
+        self.assertEqual(list(self.claude_project.glob("claude_basic*.txt")), [])
+
+    def test_search_refuses_symlinked_cache_directories(self):
+        cache_root = self.root / "cache"
+        outside = self.root / "outside-cache"
+        cache_root.mkdir()
+        outside.mkdir()
+        (cache_root / "compiled").symlink_to(outside, target_is_directory=True)
+
+        result = CliRunner().invoke(
+            main,
+            ["search", "sanitized Claude fixture marker", "--harness", "claude", "--json"],
+        )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Refusing symlinked VCC cache directory", result.output)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_search_does_not_hide_compiler_failures(self):
+        records = service.collect_sessions("claude")
+        with mock.patch.object(
+            service,
+            "compile_session",
+            side_effect=RuntimeError("compiler bug"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "compiler bug"):
+                service.search_sessions(records, re.compile("fixture"))
+
+    def test_claude_search_isolates_same_basename_sessions(self):
+        second_project = self.claude_config / "projects" / "-workspace-second-project"
+        second_project.mkdir(parents=True)
+        second_session = second_project / self.claude_session.name
+        second_fixture = self.claude_session.read_text(encoding="utf-8").replace(
+            "claude-session-basic", "claude-session-second"
+        )
+        second_session.write_text(second_fixture, encoding="utf-8")
+
+        result = CliRunner().invoke(
+            main,
+            ["search", "sanitized Claude fixture marker", "--harness", "claude", "--json"],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        hits = json.loads(result.output)
+        by_session = {hit["session_path"]: hit for hit in hits}
+        self.assertIn(str(self.claude_session), by_session)
+        self.assertIn(str(second_session), by_session)
+        first_compiled = Path(by_session[str(self.claude_session)]["compiled_path"])
+        second_compiled = Path(by_session[str(second_session)]["compiled_path"])
+        self.assertEqual(first_compiled.name, second_compiled.name)
+        self.assertNotEqual(first_compiled.parent, second_compiled.parent)
+        self.assertIn("sanitized Claude fixture marker", read_ref(by_session[str(second_session)]["ref"]))
+
+    def test_explicit_claude_compile_still_writes_beside_source(self):
+        result = CliRunner().invoke(main, ["compile", str(self.claude_session)])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(self.claude_session.with_suffix(".txt").is_file())
+        self.assertTrue(self.claude_session.with_name("claude_basic.min.txt").is_file())
+        self.assertFalse((self.root / "cache" / "compiled").exists())
+
+    def test_claude_search_returns_newest_compaction_chunk_first(self):
+        compacted = self.claude_project / "claude_compacted.jsonl"
+        compacted.write_text(
+            (FIXTURES / "claude_compacted.jsonl")
+            .read_text(encoding="utf-8")
+            .replace("/workspace/example-project", str(self.workspace)),
+            encoding="utf-8",
+        )
+
+        result = CliRunner().invoke(
+            main,
+            ["search", "compaction-order-marker", "--harness", "claude", "--json"],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        hits = json.loads(result.output)
+        self.assertGreaterEqual(len(hits), 2)
+        self.assertTrue(hits[0]["compiled_path"].endswith("claude_compacted_2.txt"))
+        self.assertIn("Newest compaction-order-marker", read_ref(hits[0]["ref"]))
+
+    def test_docs_and_skills_have_no_machine_specific_xcc_dependency(self):
+        text_files = [ROOT / "README.md", ROOT / "INSTALL.md"]
+        text_files.extend(
+            path
+            for path in sorted((ROOT / "skills").rglob("*"))
+            if path.is_file() and path.suffix in {".md", ".py"}
+        )
+        combined = "\n".join(path.read_text(encoding="utf-8") for path in text_files)
+
+        self.assertNotIn("/Users/crosstyan", combined)
+        self.assertNotIn("~/.codex/skills/conversation-compiler", combined)
+        self.assertNotIn("uv --project", combined)
 
     def test_search_cli_returns_readable_omp_refs(self):
         result = CliRunner().invoke(main, ["search", "OMP repo", "--harness", "omp", "--json"])
@@ -184,6 +486,39 @@ class XccTests(unittest.TestCase):
         self.assertGreaterEqual(len(hits), 1)
         self.assertTrue(all(hit["harness"] == "reasonix" for hit in hits))
         self.assertTrue(any("Reasonix VCC history" in read_ref(hit["ref"]) for hit in hits))
+
+    def test_reasonix_slug_fallback_uses_canonical_cwd(self):
+        real_workspace = self.root / "reasonix-workspace"
+        real_workspace.mkdir()
+        workspace_alias = self.root / "reasonix-workspace-alias"
+        workspace_alias.symlink_to(real_workspace, target_is_directory=True)
+        session = (
+            self.reasonix_home
+            / "projects"
+            / _workspace_slug(str(real_workspace.resolve()))
+            / "sessions"
+            / "20260623-010205-model.jsonl"
+        )
+        session.parent.mkdir(parents=True)
+        shutil.copyfile(FIXTURES / "reasonix_basic.jsonl", session)
+
+        records = service.filter_sessions(
+            service.collect_sessions("reasonix"),
+            str(workspace_alias),
+            latest=False,
+            limit=0,
+        )
+
+        self.assertIn(str(session), {record["path"] for record in records})
+
+    def test_t3code_export_paths_do_not_collapse_distinct_thread_ids(self):
+        cache_root = (self.root / "cache").resolve()
+        db_path = self.t3_home / "userdata" / "state.sqlite"
+
+        first = _export_path(db_path, "a/b", cache_root)
+        second = _export_path(db_path, "a-b", cache_root)
+
+        self.assertNotEqual(first, second)
 
     def test_t3code_sqlite_threads_are_discovered_and_searchable(self):
         db_path = self.t3_home / "userdata" / "state.sqlite"
@@ -351,6 +686,26 @@ class XccTests(unittest.TestCase):
         hits = json.loads(result.output)
         self.assertEqual(hits[0]["harness"], "t3code")
         self.assertIn("please inspect the T3 Code history", read_ref(hits[0]["ref"]))
+
+        t3_cache = self.root / "cache" / "t3code"
+        exported = list(t3_cache.rglob("*.jsonl"))
+        self.assertEqual(len(exported), 1)
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(exported[0].parent.stat().st_mode), 0o700)
+
+        shutil.rmtree(t3_cache)
+        outside = self.root / "outside-t3-cache"
+        outside.mkdir()
+        t3_cache.symlink_to(outside, target_is_directory=True)
+
+        refused = CliRunner().invoke(
+            main,
+            ["search", "T3 Code history", "--harness", "t3code", "--json"],
+        )
+
+        self.assertNotEqual(refused.exit_code, 0)
+        self.assertIn("Refusing symlinked VCC cache directory", refused.output)
+        self.assertEqual(list(outside.iterdir()), [])
 
 
 if __name__ == "__main__":

@@ -24,11 +24,25 @@ def main() -> None:
 @click.option("--cwd", type=click.Path(path_type=str), help="Filter by exact session cwd.")
 @click.option("--latest", is_flag=True, help="Return only the newest matching session.")
 @click.option("--limit", type=int, default=20, show_default=True)
+@click.option(
+    "--include-subagents",
+    is_flag=True,
+    help="Include nested Claude Code subagent transcripts.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
-def list_cmd(harness: HarnessFilter, cwd: str | None, latest: bool, limit: int, as_json: bool) -> None:
-    """List Codex, OMP, T3 Code, and Reasonix session files."""
+def list_cmd(
+    harness: HarnessFilter,
+    cwd: str | None,
+    latest: bool,
+    limit: int,
+    include_subagents: bool,
+    as_json: bool,
+) -> None:
+    """List Claude Code, Codex, OMP, T3 Code, and Reasonix sessions."""
     try:
-        records = filter_sessions(collect_sessions(harness), cwd, latest, limit)
+        records = filter_sessions(
+            collect_sessions(harness, include_subagents=include_subagents), cwd, latest, limit
+        )
     except HistoryError as error:
         raise click.ClickException(str(error)) from error
     _print_records(records, as_json)
@@ -40,16 +54,31 @@ def list_cmd(harness: HarnessFilter, cwd: str | None, latest: bool, limit: int, 
 @click.option("--cwd", type=click.Path(path_type=str), help="Filter by exact session cwd.")
 @click.option("--limit", type=int, default=20, show_default=True)
 @click.option("--ignore-case", is_flag=True)
+@click.option(
+    "--include-subagents",
+    is_flag=True,
+    help="Include nested Claude Code subagent transcripts.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
-def search(pattern: str, harness: HarnessFilter, cwd: str | None, limit: int, ignore_case: bool, as_json: bool) -> None:
-    """Search recent Codex, OMP, T3 Code, and Reasonix sessions."""
+def search(
+    pattern: str,
+    harness: HarnessFilter,
+    cwd: str | None,
+    limit: int,
+    ignore_case: bool,
+    include_subagents: bool,
+    as_json: bool,
+) -> None:
+    """Search recent Claude Code, Codex, OMP, T3 Code, and Reasonix sessions."""
     flags = re.IGNORECASE if ignore_case else 0
     try:
         compiled = re.compile(pattern, flags)
     except re.error as error:
         raise click.BadParameter(f"invalid regex: {error}", param_hint="pattern") from error
     try:
-        records = filter_sessions(collect_sessions(harness), cwd, False, limit)
+        records = filter_sessions(
+            collect_sessions(harness, include_subagents=include_subagents), cwd, False, limit
+        )
         hits = search_sessions(records, compiled)
     except HistoryError as error:
         raise click.ClickException(str(error)) from error
@@ -84,7 +113,12 @@ def _print_records(records: list[SessionRecord], as_json: bool) -> None:
     for rec in records:
         cwd = f" cwd={rec['cwd']}" if rec.get("cwd") else ""
         title = f" title={rec['title']}" if rec.get("title") else ""
-        print(f"{rec['harness']}\t{rec.get('timestamp') or '-'}\t{rec['path']}{cwd}{title}")
+        source = (
+            " (subagent)"
+            if rec["harness"] == "claude" and rec.get("source") == "subagent"
+            else ""
+        )
+        print(f"{rec['harness']}{source}\t{rec.get('timestamp') or '-'}\t{rec['path']}{cwd}{title}")
 
 
 def _print_hits(hits: list[SearchHit], as_json: bool) -> None:

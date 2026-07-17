@@ -1,115 +1,81 @@
 ---
 name: conversation-compiler
-description: "VCC for Codex, OMP, T3 Code, and Reasonix. Compile and search session history across harnesses into full, brief, and adaptive views."
+description: "VCC for Claude Code, Codex, OMP, T3 Code, and Reasonix. Compile and search session history across harnesses into full, brief, and adaptive views."
 ---
 
-# VCC for Codex, OMP, T3 Code, and Reasonix
+# VCC for Claude Code, Codex, OMP, T3 Code, and Reasonix
 
-Compile Codex rollout JSONL logs from `~/.codex/sessions/**/*.jsonl`, OMP session logs from `~/.omp/agent/sessions/**/*.jsonl`, T3 Code threads from `${T3CODE_HOME:-~/.t3}/{userdata,dev}/state.sqlite`, and Reasonix sessions from `${REASONIX_HOME:-~/.reasonix}/{sessions,projects/*/sessions}/**/*.jsonl` into agent-friendly views.
+Use the installed `xcc` command to search or compile conversation history.
 
-## Usage
+## Sources
+
+- Claude Code: `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/*.jsonl`; nested `subagents/agent-*.jsonl` files are opt-in with `--include-subagents`.
+- Codex: `${CODEX_HOME:-$HOME/.codex}/sessions/**/*.jsonl`, not prompt-only `history.jsonl`.
+- OMP: `${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/sessions/**/*.jsonl`.
+- T3 Code: `${T3CODE_HOME:-$HOME/.t3}/{userdata,dev}/state.sqlite`; Codex-backed threads resolve to their rollout when available, otherwise VCC exports the SQLite projection to its cache.
+- Reasonix: `${REASONIX_HOME:-$HOME/.reasonix}/sessions/**/*.jsonl` and `${REASONIX_HOME:-$HOME/.reasonix}/projects/*/sessions/**/*.jsonl`.
+
+Missing stores are skipped for `--harness all`.
+
+## Views and Output
+
+| File | Created by | Purpose |
+|------|------------|---------|
+| `.txt` | `xcc search` or `xcc compile` | Canonical full transcript and line-number coordinate system |
+| `.min.txt` | `xcc search` or `xcc compile` | Brief scan view with tool summaries and refs into `.txt` |
+| `.view.txt` | `xcc search` | Search-focused adaptive projection |
+
+`xcc search` automatically stores disposable compiled views under `${VCC_CACHE_DIR:-$HOME/.cache/vcc-history}/compiled/` and prints matching blocks with full-view refs. `xcc compile` is an explicit export: it writes `.txt` and `.min.txt` beside the input unless `-o <directory>` is supplied.
+
+Leave explicit compile output in place unless the user asks to remove it. Do not use `-o` unless a separate output directory is useful or requested.
+
+## Search Workflow
+
+1. Search current-project main sessions first:
+
+   ```bash
+   xcc search "pattern" --harness all --cwd "$PWD"
+   ```
+
+   `pattern` is a regular expression. Add `--ignore-case` when appropriate.
+
+2. If useful Claude Code context may be in a delegated task, retry with subagents:
+
+   ```bash
+   xcc search "pattern" --harness all --cwd "$PWD" --include-subagents
+   ```
+
+3. If the project filter is too narrow, repeat without `--cwd`. Keep the main-session-first order; add `--include-subagents` only as a retry.
+
+4. Read a returned ref such as `/path/session.txt:24-31`:
+
+   ```bash
+   xcc read "/path/session.txt:24-31"
+   ```
+
+Prefer `xcc search` over raw `grep` or `rg` for history search because it preserves transcript blocks and canonical refs.
+
+## List and Compile Workflow
+
+List recent current-project main sessions:
 
 ```bash
-uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc <command> [options]
+xcc list --harness all --cwd "$PWD" --limit 20
 ```
 
-## Output Files
+Retry with `--include-subagents` only when nested Claude Code work is relevant.
 
-| File | When | Description |
-|------|------|-------------|
-| `.txt` | Always | Full transcript |
-| `.min.txt` | Always | Brief UI-oriented view |
-| `.view.txt` | `xcc search` | Search-focused adaptive view |
-| stdout | `xcc search` | Matching blocks with line-range references |
+Compile a session path or T3 thread ref exactly as printed by `xcc list`:
+
+```bash
+xcc compile "<session-path-or-t3-ref>"
+```
+
+Read the highest-numbered `.min.txt` chunk first, then follow its refs with `xcc read`. Claude Code, Codex, and OMP compaction boundaries create numbered chunks; higher suffixes are newer.
 
 ## Rules
 
-- Use Codex rollout files from `~/.codex/sessions`, not `~/.codex/history.jsonl`. `history.jsonl` is prompt history only and is not a full transcript.
-- Use OMP session files from `${PI_CODING_AGENT_DIR:-~/.omp/agent}/sessions`, not rendered exports.
-- Use T3 Code history from `${T3CODE_HOME:-~/.t3}/{userdata,dev}/state.sqlite`. T3 Code stores its UI thread index in SQLite. For Codex-backed T3 threads, `xcc` prefers the underlying Codex rollout found through T3 provider logs when available; otherwise it exports the SQLite projection to an explicit `t3code` JSONL cache.
-- Use Reasonix sessions from `${REASONIX_HOME:-~/.reasonix}/sessions` and `${REASONIX_HOME:-~/.reasonix}/projects/*/sessions`.
-- Missing harness stores are skipped automatically when `--harness all` is used.
-- Prefer `xcc search` for cross-harness history search. Do not replace it with system `grep` or `rg`.
-- Do not use `-o` unless the user explicitly asks for a separate output directory.
-- Leave compiled output files in place unless the user explicitly asks to remove them.
-- Codex reasoning is unsupported in this fork. If the rollout stores encrypted reasoning, VCC hides it completely.
-
-## Workflow
-
-**1. Search across harnesses**
-
-Search recent current-project sessions from available harnesses:
-
-```bash
-uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc search "keyword" --harness all --cwd "$PWD"
-```
-
-If no exact current-project match exists, broaden the search by omitting `--cwd`.
-
-**2. Read search refs**
-
-`xcc search` emits full-view refs such as `/path/session.txt:24-31`. Read them with:
-
-```bash
-uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc read "/path/session.txt:24-31"
-```
-
-**3. List or compile sessions**
-
-List recent sessions:
-
-```bash
-uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc list --harness all --cwd "$PWD" --limit 20
-```
-
-Compile explicit Codex/OMP/T3/Reasonix JSONL files, or a T3 `state.sqlite`:
-
-```bash
-uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc compile "/absolute/path/to/session.jsonl"
-```
-
-Codex and OMP compaction boundaries are split into numbered chunks automatically. Higher chunk numbers are newer.
-
-**4. Read `.min.txt`**
-
-The `.min.txt` file is the default scan surface. It keeps user and assistant text, collapses tool calls to one-line summaries, and includes pointers back into `.txt`.
-
-Read `.view.txt` only when you want the focused projection. For precise context recovery, jump into the referenced `.txt` ranges.
-
-**5. Jump to `.txt`**
-
-All references resolve against `.txt`, which is the canonical line-number coordinate system for that chunk.
-
-# Skills
-
-## `readchat` - Read a specific Codex, OMP, T3 Code, or Reasonix session
-
-Trigger when the user wants to inspect a specific session JSONL file, thread file, T3 `state.sqlite`, or a path under `~/.codex/sessions` / `${PI_CODING_AGENT_DIR:-~/.omp/agent}/sessions` / `${REASONIX_HOME:-~/.reasonix}/sessions`.
-
-Action:
-
-1. Compile the session with `uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc compile "<session.jsonl-or-state.sqlite>"`.
-2. Read the newest `.min.txt` chunk first.
-3. Use `xcc search` and `.txt` line jumps as needed.
-
-## `searchchat` - Search across Codex, OMP, T3 Code, and Reasonix sessions
-
-Trigger when the user wants to search prior Codex, OMP, T3 Code, or Reasonix sessions.
-
-Action:
-
-1. Run `uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc search "keyword" --harness all --cwd "$PWD"`.
-2. If no useful results appear, broaden by omitting `--cwd`.
-3. Read relevant refs with `uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc read "<ref>"`.
-
-## `recall` - Recover context from recent Codex, OMP, T3 Code, or Reasonix sessions
-
-Trigger when the user asks to recall prior context, continue previous work, or recover what was discussed earlier.
-
-Action:
-
-1. Use `uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc list --harness all --cwd "$PWD" --latest` to locate the newest current-project session.
-2. If nothing matches, broaden by omitting `--cwd` and choose the most relevant recent session.
-3. Compile it with `uv --project "${VCC_ROOT:-/Users/crosstyan/Code/VCC}" run xcc compile "<session.jsonl>"`.
-4. Read the newest `.min.txt` chunk first, then use `xcc search` and `xcc read` to recover details.
-5. After recovering context, verify any referenced files or repository state directly from the workspace before relying on the transcript.
+- Search main sessions before including Claude Code subagents.
+- Codex encrypted reasoning is unsupported and remains hidden.
+- Treat `.txt` as the canonical line-number space for every view.
+- For recovered historical claims about files or repository state, verify the current workspace before acting on them.

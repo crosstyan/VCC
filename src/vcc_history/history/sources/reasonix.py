@@ -8,12 +8,13 @@ from pathlib import Path
 from ..config import HistoryConfig
 from ..json_utils import read_first_json, read_json_file, split_model_ref, string_or_none
 from ..models import SessionRecord
+from .base import canonical_path
 
 
 class ReasonixSource:
     harness = "reasonix"
 
-    def collect(self, config: HistoryConfig) -> list[SessionRecord]:
+    def collect(self, config: HistoryConfig, include_subagents: bool = False) -> list[SessionRecord]:
         records: list[SessionRecord] = []
         for path in _session_paths(config):
             record = _record_from_path(path, config)
@@ -22,11 +23,11 @@ class ReasonixSource:
         return records
 
     def matches_cwd(self, record: SessionRecord, cwd: str, config: HistoryConfig) -> bool:
-        target = os.path.abspath(cwd)
+        target = canonical_path(cwd)
         record_cwd = record.get("cwd")
-        if record_cwd and os.path.abspath(record_cwd) == target:
+        if record_cwd and canonical_path(record_cwd) == target:
             return True
-        return _project_slug(record["path"], config) == _workspace_slug(target)
+        return _project_slug(record["path"], config) in _workspace_slug_candidates(cwd)
 
 
 def _cleanup_pending(path: str) -> bool:
@@ -53,6 +54,10 @@ def _timestamp_from_filename(path: str) -> str | None:
 
 def _workspace_slug(cwd: str) -> str:
     return re.sub(r"[/\\\\:]", "-", os.path.abspath(cwd))
+
+
+def _workspace_slug_candidates(cwd: str) -> set[str]:
+    return {_workspace_slug(cwd), _workspace_slug(canonical_path(cwd))}
 
 
 def _project_slug(path: str, config: HistoryConfig) -> str | None:

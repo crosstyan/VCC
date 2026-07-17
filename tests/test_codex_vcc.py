@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import re
 import tempfile
 import unittest
@@ -22,6 +24,70 @@ class CodexVccTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.vcc = load_vcc_module()
+
+    def test_claude_basic_preserves_thinking_tools_results_and_chunk_merging(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.vcc.compile_pass(str(FIXTURES / "claude_basic.jsonl"), output_dir=tmp)
+            full = Path(tmp, "claude_basic.txt").read_text(encoding="utf-8")
+            brief = Path(tmp, "claude_basic.min.txt").read_text(encoding="utf-8")
+
+        self.assertIn("[system]", full)
+        self.assertIn("Sanitized Claude system context.", full)
+        self.assertIn("[user]", full)
+        self.assertIn("Please inspect the sanitized Claude fixture marker.", full)
+        self.assertEqual(full.count("[assistant]"), 1)
+        self.assertIn(">>>thinking", full)
+        self.assertIn("Private fixture thinking", full)
+        self.assertIn("I will inspect the fixture in two chunks.", full)
+        self.assertIn("The second chunk is merged with the first.", full)
+        self.assertIn(">>>tool_call Read:read01", full)
+        self.assertIn(">>>tool_call Bash:bash02", full)
+        self.assertIn("[tool] Read:read01", full)
+        self.assertIn("def example():", full)
+        self.assertIn("[tool_error] Bash:bash02", full)
+        self.assertIn("No module named tests.test_example", full)
+        self.assertNotIn("Private fixture thinking", brief)
+        self.assertNotIn("def example():", brief)
+        self.assertIn('* Read "src/example.py"', brief)
+        self.assertIn('* Bash "Run sanitized fixture tests"', brief)
+
+    def test_claude_compaction_splits_into_oldest_then_newest_chunks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.vcc.compile_pass(str(FIXTURES / "claude_compacted.jsonl"), output_dir=tmp)
+            first = Path(tmp, "claude_compacted_1.txt").read_text(encoding="utf-8")
+            second = Path(tmp, "claude_compacted_2.txt").read_text(encoding="utf-8")
+
+        self.assertIn("Old compaction-order-marker question.", first)
+        self.assertNotIn("Newest compaction-order-marker question.", first)
+        self.assertIn("Newest compaction-order-marker question.", second)
+        self.assertNotIn("Old compaction-order-marker question.", second)
+        self.assertIn("[compact summary", second)
+        self.assertNotIn("Hidden compact summary content", second)
+
+    def test_claude_live_partial_final_json_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.vcc.compile_pass(
+                    str(FIXTURES / "claude_live_partial.jsonl"), output_dir=tmp
+                )
+            full = Path(tmp, "claude_live_partial.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertIn("Valid content before a live partial record.", full)
+        self.assertIn("Valid response before the live partial record.", full)
+        self.assertNotIn("unfinished", full)
+
+    def test_claude_malformed_completed_line_warns_and_parsing_continues(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.vcc.compile_pass(str(FIXTURES / "claude_malformed.jsonl"), output_dir=tmp)
+            full = Path(tmp, "claude_malformed.txt").read_text(encoding="utf-8")
+
+        self.assertIn("claude_malformed.jsonl:2: malformed JSON record", stderr.getvalue())
+        self.assertIn("Valid content before a malformed completed line.", full)
+        self.assertIn("Valid response after the malformed completed line.", full)
 
     def test_codex_basic_compiles_messages_and_tools(self):
         with tempfile.TemporaryDirectory() as tmp:

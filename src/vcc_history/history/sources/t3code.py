@@ -16,7 +16,7 @@ from ..errors import HistoryError
 from ..json_utils import json_or_none, nested_get, string_or_none
 from ..models import SessionRecord
 from . import codex
-from .base import ExactCwdMixin
+from .base import ExactCwdMixin, canonical_path, ensure_private_cache_path
 
 _LOG_LINE_RE = re.compile(r"^\[[^\]]+\]\s+(?:NTIVE|CANON):\s+(.+)$")
 
@@ -24,7 +24,7 @@ _LOG_LINE_RE = re.compile(r"^\[[^\]]+\]\s+(?:NTIVE|CANON):\s+(.+)$")
 class T3CodeSource(ExactCwdMixin):
     harness = "t3code"
 
-    def collect(self, config: HistoryConfig) -> list[SessionRecord]:
+    def collect(self, config: HistoryConfig, include_subagents: bool = False) -> list[SessionRecord]:
         records: list[SessionRecord] = []
         for db_path in db_paths(config):
             records.extend(records_from_db(db_path, config))
@@ -80,8 +80,9 @@ def parse_ref(value: str) -> tuple[Path, str] | None:
 
 
 def export_thread(db_path: Path, thread_id: str, config: HistoryConfig) -> Path:
-    out_path = _export_path(db_path, thread_id, config)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_root = Path(canonical_path(config.cache_dir))
+    out_path = _export_path(db_path, thread_id, cache_root)
+    ensure_private_cache_path(cache_root, out_path.parent)
 
     with closing(_sqlite_ro(db_path)) as conn:
         thread = conn.execute(
@@ -279,9 +280,11 @@ def _safe_filename(value: str) -> str:
     return cleaned or "thread"
 
 
-def _export_path(db_path: Path, thread_id: str, config: HistoryConfig) -> Path:
-    digest = hashlib.sha256(str(db_path).encode("utf-8")).hexdigest()[:16]
-    return config.cache_dir / "t3code" / digest / f"{_safe_filename(thread_id)}.jsonl"
+def _export_path(db_path: Path, thread_id: str, cache_root: Path) -> Path:
+    db_digest = hashlib.sha256(canonical_path(db_path).encode("utf-8")).hexdigest()[:16]
+    thread_digest = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
+    filename = f"{_safe_filename(thread_id)[:80]}-{thread_digest}.jsonl"
+    return cache_root / "t3code" / db_digest / filename
 
 
 def _ref(db_path: Path, thread_id: str) -> str:

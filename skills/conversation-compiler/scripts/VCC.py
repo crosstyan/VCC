@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""View-oriented Conversation Compiler (VCC) internals for Codex, OMP, T3 Code, and Reasonix logs.
+"""View-oriented Conversation Compiler for Claude Code, Codex, OMP, T3 Code, and Reasonix logs.
 
 Produces per conversation chain:
   .txt       Full transcript (lossless rendering of JSONL)
@@ -7,8 +7,8 @@ Produces per conversation chain:
   .view.txt  View mode (search-focused, written by xcc search)
 
 Usage:
-  uv --project /Users/crosstyan/Code/VCC run xcc compile conversation.jsonl
-  uv --project /Users/crosstyan/Code/VCC run xcc search "kw" --harness all
+  xcc compile conversation.jsonl
+  xcc search "kw" --harness all
 """
 
 import argparse
@@ -148,8 +148,31 @@ def _short_tid(tid):
     return tid[-6:] if len(tid) > 6 else tid
 
 def lex(path):
-    with open(path, encoding="utf-8") as f:
-        return [json.loads(l) for l in f if l.strip()]
+    records = []
+    with open(path, "rb") as f:
+        remaining = os.fstat(f.fileno()).st_size
+        line_number = 0
+        while remaining > 0:
+            raw_line = f.readline(remaining)
+            if not raw_line:
+                break
+            remaining -= len(raw_line)
+            line_number += 1
+            if not raw_line.strip():
+                continue
+            try:
+                record = json.loads(raw_line)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                if not raw_line.endswith((b"\n", b"\r")) and remaining == 0:
+                    continue
+                print(
+                    f"warning: {path}:{line_number}: malformed JSON record: {error}",
+                    file=sys.stderr,
+                )
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+    return records
 
 
 def detect_format(recs):
