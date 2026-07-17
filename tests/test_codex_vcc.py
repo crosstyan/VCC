@@ -1,5 +1,4 @@
 import contextlib
-import importlib.util
 import io
 import json
 import re
@@ -7,24 +6,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from vcc_history.history import vcc
+
 
 ROOT = Path(__file__).resolve().parents[1]
-VCC_PATH = ROOT / "skills" / "conversation-compiler" / "scripts" / "VCC.py"
 FIXTURES = ROOT / "tests" / "fixtures"
 
 
-def load_vcc_module():
-    spec = importlib.util.spec_from_file_location("vcc_module", VCC_PATH)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
 class CodexVccTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.vcc = load_vcc_module()
+    vcc = vcc
 
     def test_claude_basic_preserves_thinking_tools_results_and_chunk_merging(self):
         with tempfile.TemporaryDirectory() as tmp:

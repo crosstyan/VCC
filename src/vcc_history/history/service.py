@@ -5,7 +5,7 @@ import os
 import re
 from pathlib import Path
 
-from . import compiler
+from . import compiler, vcc
 from .config import HistoryConfig
 from .errors import HistoryError
 from .models import HarnessFilter, SearchHit, SessionRecord
@@ -92,7 +92,6 @@ def compile_session(
         output_dir=output_dir,
         grep_pattern=grep_pattern,
         quiet=grep_pattern is not None,
-        config=resolved,
     )
 
 
@@ -103,7 +102,6 @@ def search_sessions(
 ) -> list[SearchHit]:
     resolved = config or HistoryConfig.from_env()
     hits: list[SearchHit] = []
-    vcc = compiler.load_compiler(resolved)
     for record in reversed(records):
         compiled = compile_session(
             record["path"],

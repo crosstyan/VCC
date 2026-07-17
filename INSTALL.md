@@ -16,14 +16,14 @@ uv tool install --editable .
 xcc --help
 ```
 
-The skills call the installed `xcc` command directly. No checkout path or `VCC_ROOT` environment variable is needed at runtime.
+The skills call the installed `xcc` command directly, and the compiler ships inside the installed package. No checkout path or compiler-path environment override is needed at runtime.
 
 ## Install the Skills
 
 From the repository root, define the shared skill list and installer in your shell:
 
 ```bash
-VCC_ROOT=$(pwd -P)
+REPO_ROOT=$(pwd -P)
 VCC_SKILLS="conversation-compiler readchat recall searchchat"
 
 install_vcc_skills() {
@@ -36,7 +36,7 @@ install_vcc_skills() {
       printf 'Refusing to replace existing non-symlink: %s\n' "$destination" >&2
       return 1
     fi
-    ln -sfn "$VCC_ROOT/skills/$skill" "$destination"
+    ln -sfn "$REPO_ROOT/skills/$skill" "$destination"
   done
 }
 ```

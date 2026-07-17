@@ -164,8 +164,8 @@ Command: /usr/bin/zsh -lc 'pwd && ls -la'
 - `src/vcc_history/cli.py`: typed Click frontend for the `xcc` command
 - `src/vcc_history/history/service.py`: cross-harness history orchestration
 - `src/vcc_history/history/sources/`: Claude Code, Codex, OMP, T3 Code, and Reasonix history adapters
-- `src/vcc_history/history/compiler.py`: bridge into the VCC compiler script
-- `skills/conversation-compiler/scripts/VCC.py`: compiler implementation used by the CLI
+- `src/vcc_history/history/compiler.py`: typed wrapper around the packaged VCC compiler
+- `src/vcc_history/history/vcc.py`: legacy single-module compiler pending the typed-IR split
 - `skills/*/SKILL.md`: skill definitions
 
 ## Paper

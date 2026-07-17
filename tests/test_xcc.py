@@ -20,14 +20,12 @@ if str(SRC) not in sys.path:
 
 from vcc_history.cli import main
 from vcc_history.history import service
-from vcc_history.history.compiler import reset_compiler_cache
 from vcc_history.history.refs import read_ref
 from vcc_history.history.sources.reasonix import _workspace_slug
 from vcc_history.history.sources.t3code import _export_path
 
 
 FIXTURES = ROOT / "tests" / "fixtures"
-VCC_PATH = ROOT / "skills" / "conversation-compiler" / "scripts" / "VCC.py"
 
 
 class XccTests(unittest.TestCase):
@@ -153,8 +151,6 @@ class XccTests(unittest.TestCase):
             "REASONIX_HOME": os.environ.get("REASONIX_HOME"),
             "VCC_T3CODE_DB": os.environ.get("VCC_T3CODE_DB"),
             "VCC_CACHE_DIR": os.environ.get("VCC_CACHE_DIR"),
-            "VCC_COMPILER_PATH": os.environ.get("VCC_COMPILER_PATH"),
-            "VCC_ROOT": os.environ.get("VCC_ROOT"),
         }
         os.environ["CLAUDE_CONFIG_DIR"] = str(self.claude_config)
         os.environ["CODEX_HOME"] = str(self.codex_home)
@@ -163,9 +159,6 @@ class XccTests(unittest.TestCase):
         os.environ["REASONIX_HOME"] = str(self.reasonix_home)
         os.environ.pop("VCC_T3CODE_DB", None)
         os.environ["VCC_CACHE_DIR"] = str(self.root / "cache")
-        os.environ["VCC_COMPILER_PATH"] = str(VCC_PATH)
-        os.environ["VCC_ROOT"] = str(ROOT)
-        reset_compiler_cache()
 
     def tearDown(self):
         for key, value in self.original_env.items():
@@ -173,7 +166,6 @@ class XccTests(unittest.TestCase):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
-        reset_compiler_cache()
         self.tmp.cleanup()
 
     def test_collect_sessions_reads_all_harness_metadata(self):

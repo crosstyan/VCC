@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""View-oriented Conversation Compiler for Claude Code, Codex, OMP, T3 Code, and Reasonix logs.
+"""Legacy single-module compiler pending the typed-IR split.
+
+View-oriented Conversation Compiler for Claude Code, Codex, OMP, T3 Code, and Reasonix logs.
 
 Produces per conversation chain:
   .txt       Full transcript (lossless rendering of JSONL)
@@ -11,14 +13,11 @@ Usage:
   xcc search "kw" --harness all
 """
 
-import argparse
 import base64
-import io
 import json
 import os
 import re
 import sys
-import glob as globmod
 from typing import Any
 
 # ── dict emitter ──
@@ -1962,30 +1961,6 @@ def emit(ir, key="content"):
     return lines
 
 
-# ── grep ──
-
-def _rel_path(fp):
-    try:
-        return os.path.relpath(fp)
-    except ValueError:
-        return os.path.abspath(fp)
-
-def grep_search(results, pattern):
-    first = True
-    for filepath, ir in reversed(results):
-        short = _rel_path(filepath)
-        for o in reversed(ir):
-            if not o["searchable"]: continue
-            lines = match_lines(o["content"], pattern, short, o.get("start_line", 0) + 1)
-            if len(lines) <= 1:
-                continue
-            if not first: print()
-            first = False
-            print(f"{lines[0]} [{o['type']}]")
-            for lt in lines[1:]:
-                print(lt)
-
-
 # ── compile ──
 
 def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
@@ -2074,44 +2049,3 @@ def compile_pass(input_path, output_dir=None, truncate=128, truncate_user=256,
                     print(f"  {vp}")
 
     return results
-
-# ── main ──
-
-def _expand_inputs(raw):
-    files = []
-    for r in raw:
-        expanded = globmod.glob(r, recursive=True)
-        expanded.sort(key=lambda f: os.path.getmtime(f))
-        files.extend(expanded if expanded else [r])
-    return files
-
-def main():
-    p = argparse.ArgumentParser(description="VCC - View-oriented Conversation Compiler")
-    p.add_argument("input", nargs="+")
-    p.add_argument("-o", "--output-dir")
-    p.add_argument("-t", "--truncate", nargs="?", type=int, const=128, default=128, metavar="N")
-    p.add_argument("-tu", "--truncate-user", nargs="?", type=int, const=256, default=256, metavar="N")
-    p.add_argument("--grep", metavar="PATTERN")
-    a = p.parse_args()
-    try:
-        a.grep = re.compile(a.grep) if a.grep else None
-    except re.error as e:
-        p.error(f"invalid regex for --grep: {e}")
-    all_results = []
-    for f in _expand_inputs(a.input):
-        res = compile_pass(f, a.output_dir, a.truncate, a.truncate_user,
-                      a.grep, quiet=bool(a.grep))
-        all_results.extend(res)
-    if a.grep:
-        grep_search(all_results, a.grep)
-
-if __name__ == "__main__":
-    if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    try:
-        main()
-    except BrokenPipeError:
-        try:
-            sys.stdout = open(os.devnull, "w", encoding="utf-8")
-        finally:
-            sys.exit(0)
