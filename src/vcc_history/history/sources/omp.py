@@ -47,8 +47,8 @@ class OmpSource(ExactCwdMixin):
 def record_from_path(path: str) -> SessionRecord | None:
     try:
         records = snapshot_records(path)
-        obj = next(records, None)
-        if not obj or obj.get("type") != "session":
+        obj = next((record for record in records if record.get("type") == "session"), None)
+        if not obj:
             return None
         timestamps = [obj.get("timestamp")]
         model_change: str | None = None
