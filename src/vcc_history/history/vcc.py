@@ -106,6 +106,25 @@ def _short(fn):
     return ("#" + n[-6:] + e) if len(n) > 12 else fn
 
 
+def _strip_lone_surrogates(obj):
+    """Replace unpaired UTF-16 surrogates (from \\uD83C-style JSON escapes) with U+FFFD.
+
+    json.loads keeps unpaired surrogates as str code points; any later UTF-8
+    encode (cache write, stdout print) then raises UnicodeEncodeError.
+    """
+    if isinstance(obj, str):
+        try:
+            obj.encode("utf-8")
+        except UnicodeEncodeError:
+            obj = obj.encode("utf-8", "surrogatepass").decode("utf-8", "replace")
+        return obj
+    if isinstance(obj, list):
+        return [_strip_lone_surrogates(item) for item in obj]
+    if isinstance(obj, dict):
+        return {key: _strip_lone_surrogates(value) for key, value in obj.items()}
+    return obj
+
+
 def lex(path):
     records = []
     with open(path, "rb") as f:
@@ -127,7 +146,7 @@ def lex(path):
                 warn_malformed_json_record(path, line_number, error)
                 continue
             if isinstance(record, dict):
-                records.append(record)
+                records.append(_strip_lone_surrogates(record))
     return records
 
 
